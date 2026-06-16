@@ -9,6 +9,19 @@ alternatives needed to truly cover cell calls headlessly).
 
 ---
 
+## Decision at a glance
+
+| | |
+|---|---|
+| **Recommended capture tool** | **Fireflies.ai — Business (~$19/user/mo)** |
+| **Recommended cell channel** | **Ringover** (native Loxo integration) |
+| **All-in cost, 5 recruiters** | **~$200/mo**, no custom engineering |
+| **Why** | Only requested tool that does Zoom **+** cell **+** a webhook to feed Emerald |
+| **Don't rely on** | Fathom for cell (it has none); Otter unless on Enterprise (API-gated) |
+| **Decide before buying** | tier includes a **full-transcript webhook**; call-recording consent laws |
+
+---
+
 ## Bottom line
 
 **Cell and Zoom are two different capture problems.** Zoom is captured by a
@@ -55,6 +68,26 @@ to a speech-to-text API. **No single one of the three requested tools does both
 | Feeds Emerald webhook | ✅ easy | ⚠️ Enterprise / S3-poll | ✅ easy | ✅ easy |
 | Pricing (per user/mo, ann., **verify**) | Free / $10 / $19 / $39 | Free / $8.33 / $19.99 / **Enterprise (custom) for API** | Free / $15 / ~$19 / ~$29 | $0.50/recording-hr + $0.15/hr transcription |
 | Best for | **Both cell + Zoom, automatable** | Teams already on Otter | Zoom-only, low cost, clean API | Building our own notetaker at scale |
+
+---
+
+## Decision matrix (weighted)
+
+Scored 1–5 per criterion; weights reflect what matters for *our* pipeline (cell
+coverage and automation weigh most, since Zoom is solved by everyone).
+
+| Criterion (weight) | Fireflies | Otter | Fathom | Recall.ai |
+|---|:--:|:--:|:--:|:--:|
+| Cell / phone coverage (30%) | 4 | 2 | 1 | 2 |
+| Zoom coverage (20%) | 5 | 5 | 5 | 5 |
+| Automation / API fit (25%) | 5 | 2 | 5 | 5 |
+| Cost (15%) | 4 | 3 | 5 | 4 |
+| Diarization / quality (10%) | 4 | 4 | 4 | 5 |
+| **Weighted total** | **4.45** | **2.95** | **3.70** | **3.95** |
+
+**Read:** Fireflies wins on the combination that matters (cell + automation). Recall.ai
+scores well but is build-your-own infrastructure, not an off-the-shelf tool. Fathom is
+strong but its cell score (1) caps it. Otter trails mainly on the Enterprise API gate.
 
 ---
 
@@ -179,6 +212,24 @@ are included on the tier bought.*
 4. **Hold Recall.ai / Twilio+AssemblyAI in reserve** for when we want a single uniform
    transcript format across every platform or fully headless telephony (the B2-style,
    build-our-own path).
+
+---
+
+## Recommended stack & 30-day rollout
+
+**Buy:** Fireflies.ai (Business) + Ringover for cell — ~$200/mo for 5 seats.
+
+| Week | Action |
+|---|---|
+| **1** | **Procure & verify.** Confirm with Fireflies that Business returns the **full transcript via webhook** (not just a summary) and supports our dialer. Confirm per-state recording-consent rules. |
+| **1–2** | **Connect capture.** Install the Fireflies notetaker for Zoom; connect **Ringover** as the cell dialer and link it to Loxo. |
+| **2** | **Wire the webhook.** Point Fireflies' *"transcription complete"* webhook at Emerald's `POST /webhook/transcript`; map its payload in `extract_transcript()`. |
+| **3** | **Pilot.** Run 5–10 real intake calls (mix of Zoom + cell) end-to-end → JD / ad copy / outreach / Booleans in Loxo. Spot-check transcript quality + anonymization. |
+| **4** | **Decide & scale.** If quality holds, roll out to all recruiters. Revisit Recall.ai / Twilio only if you later need a uniform transcript format or fully headless cell. |
+
+**Definition of done:** an intake call (cell *or* Zoom) auto-produces a transcript that
+flows into Emerald and lands an anonymized JD + sourcing brief on the Loxo job — no
+manual copy-paste.
 
 ---
 
