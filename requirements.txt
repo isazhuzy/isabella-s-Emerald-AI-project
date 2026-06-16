@@ -1,0 +1,6 @@
+anthropic>=0.40.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+# Optional, only needed if you run the webhook server (server.py):
+fastapi>=0.110.0
+uvicorn>=0.29.0
