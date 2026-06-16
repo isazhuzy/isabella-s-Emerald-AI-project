@@ -1,5 +1,14 @@
 
 
+# Vendor Memo — Recruiting Automation Stack
+
+*Scope: tools for the intake-to-outreach pipeline (Emerald → Loxo). **Part 1** covers
+sourcing / contact data; **Part 2** covers call/meeting transcription.*
+
+---
+
+## Part 1 — Sourcing & Contact Data
+
 **These three are not true substitutes.**
 
 **Loxo Source** is the only one purpose-built for recruiting/candidate sourcing and is the recommended primary. **Seamless.AI** is a strong *sales* contact-data engine that can complement, a sourcing workflow. 
@@ -40,4 +49,68 @@
 
 ---
 
-> **Assumptions / to verify before circulating:** Pricing figures are not yet confirmed — both Loxo and Seamless are quote/credit-based and require direct verification (see attached list of items to gather). Database-size figures are vendor-reported and not independently audited. Replace bracketed placeholders and confirmed numbers before sending.
+## Part 2 — Call/Meeting Transcription Layer
+
+Feeds the pipeline: a call/meeting transcript → Claude → JD / ad copy / outreach /
+Boolean strings → Loxo. **Cell and Zoom are two different capture problems** — Zoom is
+captured by a bot that joins the call; a cell call has no bot to invite and must be
+captured by a mobile app, a dialer/VoIP integration, or audio forwarded to a
+speech-to-text API.
+
+### Capabilities
+
+| Tool | Zoom | Cell / phone | API → pipeline | Best for |
+|---|---|---|---|---|
+| **Fireflies.ai** | ✅ bot | ✅ via dialer (ZoomPhone, RingCentral, OpenPhone, Aircall) + mobile | ✅ GraphQL + webhooks (paid) | **both cell + Zoom, automatable** |
+| **Otter.ai** | ✅ bot | ⚠️ mobile / Zoom Phone only | ⚠️ API & webhooks **Enterprise-only** | teams already on Otter |
+| **Fathom** | ✅ bot | ❌ none (no mobile app) | ✅ REST + webhooks (all tiers) | low-cost, **Zoom-only** |
+| **Recall.ai** *(infra)* | ✅ widest coverage | ⚠️ pair with telephony | ✅ it *is* an API | building our own notetaker |
+| **Ringover** *(cell dialer)* | — | ✅ recordable cell line | native Loxo integration | cell intake that lands in Loxo |
+
+### Pricing (mid-2026, vendor-reported — verify)
+
+**Per-seat** (per user / month, annual billing):
+
+| Tool | Free | Entry | Business | Top | API on |
+|---|---|---|---|---|---|
+| **Fireflies** | $0 | $10 | **$19** | $39 | paid tiers ✅ |
+| **Otter** | $0 | $8.33 | $19.99 | Enterprise (custom) | Enterprise only ⚠️ |
+| **Fathom** | $0 | $15 | $19 | $29 | all tiers ✅ |
+| **Ringover** (cell) | — | ~$21 | ~$44 | $64 / custom | native Loxo |
+
+**Usage-based** (per min/hr — build-your-own / telephony path):
+
+| Service | Rate |
+|---|---|
+| **Recall.ai** (meeting bot) | $0.50 / recording-hr + $0.15/hr transcription; no platform fee |
+| **Deepgram** (STT) | ~$0.26 / hr (cheapest) |
+| **AssemblyAI** (STT) | ~$0.37 / hr (batch from $0.15/hr) |
+| **Twilio** (telephony) | voice ~$0.013/min; record $0.0025/min; its own transcription $0.05/min → use Deepgram instead |
+
+**Illustrative — team of 5 recruiters:** **Fireflies Business (~$95/mo) + Ringover
+(~$105/mo) ≈ ~$200/mo all-in**, covering cell + Zoom + automation with no custom
+engineering. Fathom is cheaper (~$75/mo) but Zoom-only; Otter looks similar (~$100/mo)
+but automating it forces the Enterprise (custom) tier.
+
+### Recommendation — transcription
+
+1. **Fireflies.ai** as primary capture — the only requested tool that does Zoom **and**
+   phone (via dialer) **and** exposes a webhook to feed the pipeline. Confirm the chosen
+   tier delivers the **full transcript via webhook**, not just a summary.
+2. **Ringover** for cell intake — native Loxo integration lands calls on the candidate
+   record automatically.
+3. **Fathom** only as a low-cost Zoom-only fallback (does **not** cover cell).
+4. **Recall.ai / Twilio + AssemblyAI** held in reserve for a fully headless,
+   build-our-own path.
+
+---
+
+> **Assumptions / to verify before circulating:**
+> - **Sourcing (Part 1):** Loxo & Seamless pricing is quote/credit-based — confirm
+>   directly. Database-size figures are vendor-reported, not independently audited.
+> - **Transcription (Part 2):** All pricing is vendor-reported (mid-2026); confirm the
+>   *specific tier* that includes transcript export + webhooks. Confirm Fireflies'
+>   webhook returns the **full transcript** on the plan purchased.
+> - **Compliance:** Verify call-recording consent / two-party-consent laws for our
+>   operating states before enabling automatic recording.
+> - Replace bracketed placeholders and confirmed numbers before sending.
