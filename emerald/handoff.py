@@ -4,8 +4,8 @@ B1 is Loxo-native: the heavy lifting (Loxo Source AI search, ranking, enrichment
 outreach) happens *inside Loxo*, driven by Stage Automations (see LOXO_SETUP.md).
 This module produces the one-click handoff a recruiter executes:
 
-  - the exact Boolean string to paste into Loxo Source
-  - the target pipeline stages (Sourcing -> Outreach) the automations key off
+  - the exact Boolean string to paste into each sourcing channel
+  - the target pipeline stages (long list -> shortlist) the automations key off
   - the outreach campaign content to enroll the shortlist in
   - a step-by-step runbook
 
@@ -61,28 +61,28 @@ def build_sourcing_brief(
 
 > Confidential search. Do not expose the client name in any posting or outreach.
 
-## 1. Paste into Loxo Source
-```
-{loxo_bool}
-```
-Other Boolean variants (for LinkedIn / Google X-ray / re-use):
-- **generic:** `{booleans.get('generic', '')}`
-- **linkedin:** `{booleans.get('linkedin', '')}`
-- **google_xray:** `{booleans.get('google_xray', '')}`
+## 1. Boolean by sourcing channel
+Paste the matching variant into each channel you work:
+
+- **Loxo Source:** `{loxo_bool}`
+- **LinkedIn OW / LinkedIn Non-OW:** `{booleans.get('linkedin', '')}`
+- **Indeed Database:** `{booleans.get('generic', '')}`
+- **Google X-ray (re-use):** `{booleans.get('google_xray', '')}`
 
 ## 2. Target search criteria
 {_criteria_block(deliverables.get('search_criteria', {}))}
 
 ## 3. Runbook (the one manual step is the search itself)
-1. Open this job in Loxo → **Loxo Source**.
-2. Paste the Boolean above (or use AI search with the criteria) and run it.
-3. Review results; select the best **{target_count}** candidates.
-4. **Bulk-move them to the `{settings.sourcing_stage_name}` stage.** (No enrichment
+1. Open this job in Loxo and run each channel — **Loxo Source**, **LinkedIn OW**,
+   **LinkedIn Non-OW (more passive)**, **Indeed Database** — using the matching
+   Boolean above (or Loxo AI search with the criteria).
+2. Review results; select the best **{target_count}** candidates across channels.
+3. **Bulk-move them to the `{settings.sourcing_stage_name}` stage.** (No enrichment
    here — keeps it free for the long list.)
-5. Pick the top **{n}** and move them to the `{settings.outreach_stage_name}` stage.
+4. Pick the top **{n}** and move them to the `{settings.outreach_stage_name}` stage.
    → Stage Automation fires: **find contact details (enrich)** + **add to the
    `{settings.outreach_campaign_name}` campaign** + **AI highlights**.
-6. Review enriched contacts + AI highlights, then let the campaign send.
+5. Review enriched contacts + AI highlights, then let the campaign send.
 
 _Enrichment is capped to the top {n} by only moving them into
 `{settings.outreach_stage_name}` — this is the cost-control gate._

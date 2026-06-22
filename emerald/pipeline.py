@@ -25,6 +25,8 @@ def render_description(d: dict[str, Any]) -> str:
         lines += ["### Responsibilities", *[f"- {r}" for r in jd["responsibilities"]], ""]
     if jd.get("requirements"):
         lines += ["### Requirements", *[f"- {r}" for r in jd["requirements"]], ""]
+    if jd.get("why_join"):
+        lines += ["### Why Join", *[f"- {w}" for w in jd["why_join"]], ""]
     comp = d.get("comp") or {}
     if comp.get("min") or comp.get("max"):
         cur = comp.get("currency", "USD")
@@ -78,7 +80,9 @@ def run_pipeline(
             published=False,
         )
         result["loxo"] = {"job": job}
-        job_id = job.get("id") if isinstance(job, dict) else None
+        # Loxo wraps the created job as {"job": {"id": ...}}; unwrap if needed.
+        job_obj = job.get("job", job) if isinstance(job, dict) else {}
+        job_id = job_obj.get("id") if isinstance(job_obj, dict) else None
 
     # 4) Build the B1 recruiter handoff (Sourcing Brief). Always produced.
     brief_md = build_sourcing_brief(deliverables, job_id=job_id)

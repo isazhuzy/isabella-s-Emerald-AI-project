@@ -28,8 +28,11 @@ class Settings:
     loxo_note_activity_type_id: str | None = os.getenv("LOXO_NOTE_ACTIVITY_TYPE_ID")
 
     # ---- B1 pipeline / handoff config (names must match your Loxo workflow) ----
-    sourcing_stage_name: str = os.getenv("LOXO_SOURCING_STAGE_NAME", "Sourcing")
-    outreach_stage_name: str = os.getenv("LOXO_OUTREACH_STAGE_NAME", "Outreach")
+    # Defaults match the live Emerald Resource Group Loxo workflow: the full
+    # long list lands on "Long List" (free), the shortlist on "Short List"
+    # (where enrichment + outreach automations fire — the cost-control gate).
+    sourcing_stage_name: str = os.getenv("LOXO_SOURCING_STAGE_NAME", "Long List")
+    outreach_stage_name: str = os.getenv("LOXO_OUTREACH_STAGE_NAME", "Short List")
     outreach_campaign_name: str = os.getenv(
         "LOXO_OUTREACH_CAMPAIGN_NAME", "Confidential Outreach"
     )

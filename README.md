@@ -99,27 +99,29 @@ uvicorn server:app --reload --port 8000
 
 ## Phase 2 / B1 — Loxo-native sourcing (implemented)
 
-B1 leans on Loxo's own AI search + **Stage Automations** instead of rebuilding
-sourcing/enrichment. Emerald creates the job and emits a **Sourcing Brief**; Loxo
-does the rest.
+B1 leans on Loxo's own AI search + Loxo-native enrichment/outreach instead of
+rebuilding sourcing. Emerald creates the job and emits a **Sourcing Brief**; the
+recruiter runs the search and drives the shortlist through Loxo's tools.
 
 **Flow:**
 ```
 Emerald: create job (unpublished) + Sourcing Brief
-   └─ recruiter: paste Boolean → Loxo Source → select 75–150 → "Sourcing" stage
-        └─ move top 15–20 → "Outreach" stage
-             └─ Stage Automation: enrich contacts + enroll campaign + AI highlights
+   └─ recruiter: paste Boolean → channels (Loxo Source/LinkedIn/Indeed) → select 75–150 → "Long List" stage
+        └─ move top 15–20 → "Short List" stage
+             └─ on Short List, bulk: Fetch Contacts (enrich) + Add to Campaign + AI highlights
 ```
 
 - Every run writes `output/<job>_sourcing-brief.md` — the recruiter's runbook
   (Boolean to paste, target stages, outreach content).
 - On `--push`, the brief is also posted as a **note on the Loxo job** (needs
   `LOXO_NOTE_ACTIVITY_TYPE_ID`).
-- **Cost control:** enrichment runs only on the "Outreach" stage, so only the top
-  `EMERALD_ENRICH_TOP_N` (default 20) consume Loxo Credits.
+- **Cost control:** enrichment (Fetch Contacts) is run only on the **Short List**
+  shortlist, so only the top `EMERALD_ENRICH_TOP_N` (default 20) consume Loxo
+  Credits. Loxo has no single "on stage entry" automation for enrich+enroll, so
+  these are bulk clicks on the shortlist — the gate is *where you click*.
 
 ➡️ **One-time Loxo config is in [`LOXO_SETUP.md`](./LOXO_SETUP.md)** — pipeline
-stages, the outreach campaign, and the Stage Automation.
+stages, the outreach campaign, and the (semi-manual) Short List actions.
 
 ### Later: B2 (fully headless)
 

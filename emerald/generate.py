@@ -4,7 +4,7 @@ Returns a dict with these top-level keys (the contract the rest of the pipeline
 relies on):
 
     title                 str   - role title (generic, no employer)
-    jd                    dict  - anonymized JD: summary, responsibilities[], requirements[]
+    jd                    dict  - anonymized JD: summary, responsibilities[], requirements[], why_join[]
     comp                  dict  - {min, max, currency, period}
     ad_copy               dict  - {linkedin, indeed, doccafe}  (platform-tailored)
     outreach              list  - sequence steps [{channel, day, subject, body}]
@@ -19,14 +19,16 @@ from typing import Any
 from .config import settings
 
 SYSTEM_PROMPT = """\
-You are a senior recruiting operations assistant. From a recruiter/hiring-manager
-intake-call transcript you produce a complete, ready-to-use sourcing package.
+You are a senior recruiting operations assistant at Emerald Resource Group. From a
+recruiter/hiring-manager intake-call transcript you produce a complete, ready-to-use
+sourcing package.
 
 HARD RULES:
 - CONFIDENTIAL / ANONYMOUS output. Never name the employer, its products, named
   people, or an exact street address. Generalize identifying details
   (e.g. "a Series B fintech", "a regional health system"). Keep the role itself
-  vivid and specific.
+  vivid and specific. (The style examples below name companies for format reference
+  ONLY — your output must stay anonymous.)
 - Tailor ad copy to each platform's norms: LinkedIn (concise, first-person,
   ~150 words), Indeed (structured, scannable, keyword-rich), DocCafe
   (physician/clinician audience — clinical setting, schedule, call, comp framing).
@@ -34,10 +36,31 @@ HARD RULES:
   variants (LinkedIn search, Google X-ray, and a Loxo Source friendly version).
 - Output MUST be a single JSON object. No prose, no markdown fences.
 
+JD WRITING STYLE (match Emerald's house style shown in the examples):
+- Open with a short, energizing summary that frames the org generically and sells
+  the opportunity (visibility, stability, culture, growth) — not a dry blurb.
+- `responsibilities` = punchy, action-led bullets ("What You'll Be Doing").
+- `requirements` = concrete, scannable must-haves ("What We're Looking For"):
+  degree/credential, years of experience as a range, key skills/tools.
+- `why_join` = 4-7 candidate-facing selling points ("Why Consider This
+  Opportunity" / for clinicians "Why physicians make the move" + practice details):
+  comp framing, benefits, autonomy, schedule, growth/partnership, culture.
+- For physician/clinician roles, lead comp with earning potential
+  (e.g. "$400K+ earning potential, base + productivity incentives") and include
+  CME, malpractice, schedule/call, and referral/support details.
+
+BOOLEAN QUALITY (match the examples):
+- Expand certifications/credentials: ("Board Certified" OR "Board Eligible" OR BC
+  OR BE OR BE/BC); ("Bachelor's" OR degree field).
+- Enumerate geography as an OR-list of the metro/cities/states in scope.
+- Group role titles and key skills in OR-clauses joined by AND.
+- Use NOT to exclude obvious mismatches (e.g. NOT (intern OR resident OR locum)
+  for clinicians; NOT (audit OR auditor OR assurance OR internship) for accounting).
+
 JSON shape:
 {
   "title": str,
-  "jd": {"summary": str, "responsibilities": [str], "requirements": [str]},
+  "jd": {"summary": str, "responsibilities": [str], "requirements": [str], "why_join": [str]},
   "comp": {"min": number|null, "max": number|null, "currency": "USD", "period": "year"},
   "ad_copy": {"linkedin": str, "indeed": str, "doccafe": str},
   "outreach": [{"channel": "email"|"inmail"|"sms", "day": int, "subject": str, "body": str}],
@@ -45,6 +68,47 @@ JSON shape:
   "search_criteria": {"titles": [str], "skills": [str], "location": str,
                       "seniority": str, "must_have": [str], "nice_to_have": [str]}
 }
+
+STYLE EXAMPLES (Emerald house style — for STRUCTURE, TONE, and BOOLEAN shape only;
+the employer names here are illustrative, keep YOUR output anonymous):
+
+[Example A — Senior Accountant]
+summary: entrepreneurial multi-industry organization, collaborative culture,
+  high visibility to leadership, long-term growth.
+responsibilities: Manage day-to-day accounting for assigned business units;
+  Prepare and analyze monthly financial statements; General ledger maintenance
+  and account reconciliations; Support month-end/year-end close; Maintain policies
+  and internal controls; Assist annual audit preparation.
+requirements: Bachelor's in Accounting; 4-8 years progressive accounting; Strong
+  GL & financial reporting; Month-end close & reconciliations; Excel + ERP
+  proficiency; Strong attention to detail.
+why_join: Competitive compensation; Semi-annual bonus potential; Medical/dental/
+  vision/401(k); High visibility; Collaborative culture; Long-term growth.
+boolean: ("Senior Accountant" OR Accountant) AND (reconciliation* OR "journal
+  entries" OR "month-end close") AND (AP OR "accounts payable") AND (AR OR
+  "accounts receivable") AND (Excel OR VLOOKUP OR "pivot tables") AND ("Bachelor's"
+  OR Accounting) AND NOT (audit OR assurance OR auditor OR internship)
+
+[Example B — Pulmonologist]
+why_join/practice: Established outpatient panel with immediate volume; No required
+  hospital coverage; Predictable weekly schedule; Procedure flexibility; Strong
+  internal referral network; Physician-led culture with autonomy; Long-term
+  partnership potential.
+comp: $400K+ earning potential; competitive base + productivity incentives; full
+  benefits; CME allowance + PTO.
+boolean: (Pulmonologist OR "Pulmonary Medicine" OR Pulmonary) AND ("Board
+  Certified" OR "Board Eligible" OR BE OR BC OR BE/BC) AND (Connecticut OR CT OR
+  "New York" OR NY OR "New Jersey" OR NJ)
+
+[Example C — OB/GYN]
+requirements: MD/DO; Board Certified or Board Eligible in OB/GYN; Active state
+  license or ability to obtain; DEA license or eligibility.
+why_join/practice: Established patient panel + immediate volume; Consistent
+  multi-specialty referral network; Structured, predictable schedule; Physician-led
+  autonomy; Partnership/ownership opportunity; CME + malpractice coverage.
+boolean: (OB/GYN OR OBGYN OR "Obstetrics and Gynecology") AND ("Board Certified"
+  OR "Board Eligible" OR BE OR BC OR BE/BC) AND (Westchester OR White Plains OR Rye
+  OR Purchase OR Yonkers OR New Rochelle OR Scarsdale OR Harrison OR Tarrytown)
 """
 
 USER_TEMPLATE = """\
@@ -70,31 +134,38 @@ def generate_deliverables(transcript: str, client_name: str = "") -> dict[str, A
     import anthropic
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    resp = client.messages.create(
-        model=settings.model,
-        max_tokens=4000,
-        temperature=0.3,
-        # Prompt caching: the long system prompt is reused across every call,
-        # so cache it to cut latency + cost on repeat runs.
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": USER_TEMPLATE.format(
-                    client_name=client_name or "(none provided)",
-                    transcript=transcript.strip(),
-                ),
-            }
-        ],
+    user_content = USER_TEMPLATE.format(
+        client_name=client_name or "(none provided)",
+        transcript=transcript.strip(),
     )
-    raw = "".join(block.text for block in resp.content if block.type == "text")
-    return _parse_json(raw)
+
+    # The model occasionally emits invalid JSON (an unescaped quote in a long
+    # field). Retry a couple of times before giving up — generation is variable,
+    # so a fresh call usually parses. _parse_json strips any prose/fences.
+    last_err: Exception | None = None
+    for _ in range(3):
+        resp = client.messages.create(
+            model=settings.model,
+            max_tokens=8000,
+            # Prompt caching: the long system prompt is reused across every call,
+            # so cache it to cut latency + cost on repeat runs.
+            system=[
+                {
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_content}],
+        )
+        raw = "".join(block.text for block in resp.content if block.type == "text")
+        try:
+            return _parse_json(raw)
+        except json.JSONDecodeError as e:
+            last_err = e
+    raise RuntimeError(
+        f"Claude returned unparseable JSON after 3 attempts: {last_err}"
+    )
 
 
 def _parse_json(raw: str) -> dict[str, Any]:
@@ -130,6 +201,13 @@ def _mock_deliverables(transcript: str, client_name: str) -> dict[str, Any]:
                 "MD or DO, board certified or board eligible in Family Medicine",
                 "Active or eligible state medical license",
                 "Strong outpatient clinical judgment and communication",
+            ],
+            "why_join": [
+                "Competitive base salary plus productivity incentives",
+                "Predictable outpatient schedule with light call",
+                "Comprehensive benefits, CME allowance, and PTO",
+                "Supportive, multidisciplinary, physician-led culture",
+                "Long-term growth and partnership potential",
             ],
         },
         "comp": {"min": 230000, "max": 270000, "currency": "USD", "period": "year"},
