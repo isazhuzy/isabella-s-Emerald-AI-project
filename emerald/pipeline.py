@@ -46,9 +46,14 @@ def run_pipeline(
     transcript: str,
     client_name: str = "",
     push_to_loxo: bool = False,
+    publish: bool = False,
     save_artifact: bool = True,
 ) -> dict[str, Any]:
-    """Run the full Phase 1 flow. Returns a result dict with all deliverables."""
+    """Run the full Phase 1 flow. Returns a result dict with all deliverables.
+
+    publish=True creates the job live on the careers page instead of unpublished.
+    The JD is already anonymized, but default stays unpublished for human review.
+    """
     # 1) Generate (Claude, or offline mock if no key)
     deliverables = generate_deliverables(transcript, client_name)
 
@@ -77,7 +82,7 @@ def run_pipeline(
             title=deliverables.get("title", "Confidential Search"),
             description=description_md,
             salary=_salary_str(deliverables.get("comp")),
-            published=False,
+            published=publish,
         )
         result["loxo"] = {"job": job}
         # Loxo wraps the created job as {"job": {"id": ...}}; unwrap if needed.
