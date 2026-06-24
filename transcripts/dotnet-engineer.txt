@@ -1,0 +1,12 @@
+Intake call — Senior .NET Software Engineer (Direct Hire)
+Participants: Recruiter (Emerald), Hiring Manager (Eng Director)
+
+HM: We need a senior full-stack .NET developer. Cleveland, Ohio — eastern suburbs. It's hybrid but they must live within 45 minutes of the office, no exceptions. Must be a US Citizen — hard requirement, no sponsorship. Direct hire, salary 90K to 125K plus benefits, PTO, and a pension. Very stable, growing company.
+
+Recruiter: What's the stack and the work?
+
+HM: C#, .NET Framework, ASP.NET. Front end is Angular or React JavaScript. They'll write SQL hooks into SQL Server. REST and WCF web services, API development. Automated testing — unit, integration, acceptance — and SOLID principles. Microsoft TFS including build and deployment automation. Mix of new development and some maintenance. Big upcoming projects: a full rewrite of the company website and integrating a new ERP. People who've built external- and internal-facing sites from scratch get priority.
+
+Recruiter: Experience level?
+
+HM: 4+ years minimum, experienced developers only. Bachelor's in CS or equivalent. Highly collaborative team, ownership of the codebase, work-life balance and culture are a priority.

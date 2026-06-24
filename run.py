@@ -24,6 +24,9 @@ def main() -> int:
     ap.add_argument("--publish", action="store_true",
                     help="Publish the job live on the careers page (implies --push). "
                          "Confidential JD is already anonymized; review first.")
+    ap.add_argument("--type", dest="job_type", default=None,
+                    choices=["physician", "finance", "tech", "lab", "general"],
+                    help="Force a job-family profile (default: auto-detect)")
     ap.add_argument("--quiet", action="store_true", help="Print only the artifact path")
     args = ap.parse_args()
 
@@ -40,7 +43,8 @@ def main() -> int:
         return 2
 
     result = run_pipeline(
-        transcript, client_name=args.client, push_to_loxo=push, publish=args.publish
+        transcript, client_name=args.client, push_to_loxo=push, publish=args.publish,
+        job_type=args.job_type,
     )
 
     if args.quiet:
@@ -50,7 +54,9 @@ def main() -> int:
     d = result["deliverables"]
     print("=" * 64)
     print(f"TITLE: {d.get('title')}")
-    print(f"Mock generation: {result['used_mock_generation']}  |  "
+    detected = " (auto)" if not args.job_type else " (forced)"
+    print(f"Job family: {result.get('job_type')}{detected}  |  "
+          f"Mock generation: {result['used_mock_generation']}  |  "
           f"Redaction hits: {result['redaction_hits'] or 'none'}")
     print("=" * 64)
     print("\n--- ANONYMIZED JD (markdown) ---\n")

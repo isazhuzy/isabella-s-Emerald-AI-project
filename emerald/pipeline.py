@@ -48,14 +48,17 @@ def run_pipeline(
     push_to_loxo: bool = False,
     publish: bool = False,
     save_artifact: bool = True,
+    job_type: str | None = None,
 ) -> dict[str, Any]:
     """Run the full Phase 1 flow. Returns a result dict with all deliverables.
 
-    publish=True creates the job live on the careers page instead of unpublished.
-    The JD is already anonymized, but default stays unpublished for human review.
+    job_type selects a family profile (physician/finance/tech/lab/general); None
+    auto-detects from the transcript. publish=True creates the job live on the
+    careers page instead of unpublished (JD is already anonymized, but default stays
+    unpublished for human review).
     """
     # 1) Generate (Claude, or offline mock if no key)
-    deliverables = generate_deliverables(transcript, client_name)
+    deliverables = generate_deliverables(transcript, client_name, job_type=job_type)
 
     # 2) Anonymization safety-net
     deliverables, masked = redact(deliverables, client_name=client_name)
@@ -67,6 +70,7 @@ def run_pipeline(
         "client_name_input": client_name,
         "redaction_hits": masked,
         "used_mock_generation": deliverables.get("_mock", False),
+        "job_type": deliverables.get("_job_type", "general"),
         "deliverables": deliverables,
         "job_description_markdown": description_md,
         "loxo": None,
