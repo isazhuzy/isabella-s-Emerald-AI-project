@@ -64,7 +64,12 @@ def main() -> int:
             print(f"  [{k}] {d['ad_copy'][k][:120]}...")
     print(f"\n--- OUTREACH: {len(d.get('outreach', []))} steps ---")
     if result.get("loxo"):
-        print(f"\nLoxo: {json.dumps(result['loxo'])[:300]}")
+        loxo = result["loxo"]
+        if loxo.get("job_url"):
+            state = "PUBLISHED" if args.publish else "unpublished"
+            print(f"\n🔗 Loxo job ({state}): {loxo['job_url']}")
+        else:
+            print(f"\nLoxo: {json.dumps(loxo)[:300]}")
     print(f"\n📄 Full artifact:  {result.get('artifact_path')}")
     print(f"📋 Sourcing brief: {result.get('brief_path')}")
     print("   → hand this to the recruiter; see LOXO_SETUP.md for the one-time"

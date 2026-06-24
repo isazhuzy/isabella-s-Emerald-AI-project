@@ -88,6 +88,14 @@ def run_pipeline(
         # Loxo wraps the created job as {"job": {"id": ...}}; unwrap if needed.
         job_obj = job.get("job", job) if isinstance(job, dict) else {}
         job_id = job_obj.get("id") if isinstance(job_obj, dict) else None
+        # Clickable Loxo UI link for the created job (the recruiter app, not the
+        # API path). API jobs have no owner, so they're hard to find by browsing —
+        # this direct link is the reliable way to open them.
+        agency_id = job_obj.get("agency_id") if isinstance(job_obj, dict) else None
+        if job_id and agency_id and settings.loxo_domain:
+            result["loxo"]["job_url"] = (
+                f"https://{settings.loxo_domain}/agencies/{agency_id}/jobs/{job_id}"
+            )
 
     # 4) Build the B1 recruiter handoff (Sourcing Brief). Always produced.
     brief_md = build_sourcing_brief(deliverables, job_id=job_id)
