@@ -1,0 +1,34 @@
+# Render deploy config for the Emerald web UI.
+# In Render: New -> Blueprint -> pick this repo. Render reads this file, then prompts
+# you to paste the secret values (the ones marked sync:false) in the dashboard.
+services:
+  - type: web
+    name: emerald
+    runtime: python
+    plan: free                       # bump to "starter" ($7/mo) to avoid idle cold-starts
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # --- secrets: enter these in the Render dashboard (not stored in git) ---
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SEAMLESS_API_KEY
+        sync: false
+      - key: LOXO_API_KEY
+        sync: false
+      - key: LOXO_DOMAIN
+        sync: false
+      - key: LOXO_SLUG
+        sync: false
+      - key: LOXO_DEFAULT_JOB_TYPE_ID
+        sync: false
+      - key: LOXO_DEFAULT_COMPANY_ID
+        sync: false
+      - key: LOXO_NOTE_ACTIVITY_TYPE_ID
+        sync: false
+      # --- non-secret config ---
+      - key: EMERALD_MODEL
+        value: claude-opus-4-8
+      - key: EMERALD_UI_PASSWORD
+        value: emerald            # the web-UI login password; change here anytime

@@ -11,15 +11,34 @@ Python (a laptop, a small VM, Render) and the whole team uses one URL — no ter
 from __future__ import annotations
 
 import html
+import os
+import secrets
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from emerald.config import settings
 from emerald.pipeline import run_pipeline
 
 app = FastAPI(title="Emerald", version="0.2.0")
+
+# Simple shared-password gate on the web UI. Default "emerald"; override in the host
+# env with EMERALD_UI_PASSWORD. (The browser will prompt for login — any username,
+# this password.) /health is left open so Render's health check works.
+UI_PASSWORD = os.getenv("EMERALD_UI_PASSWORD", "emerald")
+_security = HTTPBasic()
+
+
+def require_login(creds: HTTPBasicCredentials = Depends(_security)) -> bool:
+    if not secrets.compare_digest(creds.password, UI_PASSWORD):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
 
 
 # ----------------------------- webhook (hands-off path) -----------------------------
@@ -129,7 +148,7 @@ def _render_results(result: dict[str, Any]) -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home() -> str:
+def home(_: bool = Depends(require_login)) -> str:
     return _PAGE.format(transcript="", push="", source="", results="")
 
 
@@ -139,6 +158,7 @@ def run(
     client: str = Form(""),
     push: bool = Form(False),
     source: bool = Form(False),
+    _: bool = Depends(require_login),
 ) -> str:
     if not transcript.strip():
         return _PAGE.format(transcript="", push="", source="",
