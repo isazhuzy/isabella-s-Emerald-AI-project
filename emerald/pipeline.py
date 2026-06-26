@@ -133,6 +133,7 @@ def run_pipeline(
                     deliverables.get("search_criteria", {}),
                     limit=source_limit,
                     enrich=enrich_contacts,
+                    job_type=deliverables.get("_job_type"),
                 )
             except Exception as e:  # don't let sourcing crash the pipeline
                 result["sourcing"] = {"error": str(e)}

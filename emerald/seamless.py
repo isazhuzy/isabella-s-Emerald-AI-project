@@ -62,15 +62,22 @@ class SeamlessClient:
         return {"Token": self.api_key, "Content-Type": "application/json"}
 
     def _post(self, path: str, body: dict[str, Any]) -> Any:
+        return self._request("POST", path, json=body)
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return self._request("GET", path, params=params)
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         url = f"{BASE_URL}{path}"
-        resp = requests.post(url, headers=self._headers, json=body, timeout=self.timeout)
+        resp = requests.request(method, url, headers=self._headers,
+                                timeout=self.timeout, **kwargs)
         if resp.status_code in (401, 403):
             raise SeamlessError(
                 f"{resp.status_code} from {url} — check SEAMLESS_API_KEY and that your "
                 f"plan includes API access (Enterprise). Body: {resp.text[:300]}"
             )
         if not resp.ok:
-            raise SeamlessError(f"POST {url} -> {resp.status_code}: {resp.text[:400]}")
+            raise SeamlessError(f"{method} {url} -> {resp.status_code}: {resp.text[:400]}")
         return resp.json() if resp.content else {}
 
     # ---- raw endpoints ----
@@ -83,7 +90,9 @@ class SeamlessClient:
         return self._post("/contacts/research", {"searchResultIds": search_result_ids})
 
     def poll_research(self, request_ids: list[str]) -> Any:
-        return self._post("/contacts/research/poll", {"requestIds": request_ids})
+        # GET with a comma-separated requestIds query param (per Seamless docs).
+        return self._get("/contacts/research/poll",
+                         params={"requestIds": ",".join(request_ids)})
 
 
 # ---- mapping: generated search_criteria -> Seamless filters ----
@@ -105,15 +114,58 @@ def _extract_states(location: str) -> list[str]:
     return found
 
 
+# Seamless seniority enum (exact values).
+_SENIORITY_ENUM = {"C-Level", "VP", "Director", "Manager", "Senior", "Entry Level",
+                   "Mid-Level", "Other"}
+# Default bands for a normal IC/mid role — deliberately omits C-Level & VP so the
+# search stops surfacing CFOs/Chiefs for an individual-contributor opening.
+_SENIORITY_DEFAULT = ["Mid-Level", "Senior", "Manager"]
+
+# Map our job families to Seamless's department enum (only where it's a clean fit).
+_DEPARTMENT_BY_FAMILY = {
+    "finance": ["Finance"],
+    "tech": ["Engineering", "IT"],
+}
+
+
+def map_seniority(text: str) -> list[str]:
+    """Map a free-text seniority (from search_criteria) to Seamless enum bands."""
+    t = (text or "").lower()
+    bands: list[str] = []
+    if any(k in t for k in ("chief", "c-level", "c-suite", "cxo", "ceo", "cfo",
+                            "cto", "coo", "president")):
+        bands.append("C-Level")
+    if "vp" in t or "vice president" in t:
+        bands.append("VP")
+    if "director" in t or "head of" in t:
+        bands.append("Director")
+    if "manager" in t or "management" in t or "lead" in t or "supervisor" in t:
+        bands.append("Manager")
+    if "senior" in t or "individual contributor" in t or "ic" == t.strip():
+        bands += ["Senior", "Mid-Level"]
+    if "mid" in t:
+        bands.append("Mid-Level")
+    if any(k in t for k in ("junior", "entry", "associate", "new grad", "graduate")):
+        bands += ["Entry Level", "Mid-Level"]
+    if not bands:
+        bands = list(_SENIORITY_DEFAULT)
+    # de-dupe, preserve order, keep only valid enum values
+    seen: set[str] = set()
+    return [b for b in bands if b in _SENIORITY_ENUM and not (b in seen or seen.add(b))]
+
+
 def criteria_to_filters(
-    search_criteria: dict[str, Any], keywords: int = 0
+    search_criteria: dict[str, Any], keywords: int = 0, job_type: str | None = None
 ) -> dict[str, Any]:
     """Translate Emerald's search_criteria into Seamless /search/contacts filters.
 
     Seamless ANDs every filter, and `contactKeyword` values are AND-combined — so
     sending many specific skill phrases tanks recall to zero. We lead with the high-
-    signal, OR-style filters (job titles + state), and only add a couple of short
-    keywords when explicitly asked (keywords>0). Recruiters narrow from there.
+    signal, OR-style filters (job titles + state + seniority), and only add a couple
+    of short keywords when explicitly asked (keywords>0). Recruiters narrow from there.
+
+    Seniority is mapped from search_criteria.seniority (default mid/senior/manager,
+    which excludes execs) — but SKIPPED for physicians, who don't fit corporate bands.
     """
     c = search_criteria or {}
     filters: dict[str, Any] = {"contactCountry": ["United States"]}
@@ -126,6 +178,16 @@ def criteria_to_filters(
     if states:
         filters["contactState"] = states
 
+    if job_type != "physician":
+        seniority = map_seniority(c.get("seniority") or "")
+        if seniority:
+            filters["seniority"] = seniority
+
+    # Department sharpens precision for families that map cleanly to a Seamless dept.
+    dept = _DEPARTMENT_BY_FAMILY.get(job_type or "")
+    if dept:
+        filters["department"] = dept
+
     if keywords > 0:
         # Prefer short, single-token skills (e.g. GAAP, ERP) — they AND less harshly.
         skills = sorted(
@@ -136,6 +198,18 @@ def criteria_to_filters(
             filters["contactKeyword"] = skills
 
     return filters
+
+
+_EXEC_RX = re.compile(
+    r"\b(chief|ceo|cfo|cto|coo|cio|cxo|president|vice\s*president|vp|svp|evp|avp"
+    r"|executive|director|partner|owner|founder|head\s+of|board\s+member)\b",
+    re.I,
+)
+
+
+def _looks_exec(title: str | None) -> bool:
+    """True if the title looks like an executive/owner (to drop for IC roles)."""
+    return bool(title and _EXEC_RX.search(title))
 
 
 def _normalize(contact: dict[str, Any]) -> dict[str, Any]:
@@ -164,15 +238,22 @@ def source_candidates(
     enrich: bool = False,
     enrich_top_n: int = 10,
     client: SeamlessClient | None = None,
+    job_type: str | None = None,
 ) -> dict[str, Any]:
     """Search Seamless for candidates matching the criteria; optionally enrich.
 
     Returns {filters, total, candidates[], enriched(bool), error?}.
     """
     client = client or SeamlessClient()
-    filters = criteria_to_filters(search_criteria)
+    filters = criteria_to_filters(search_criteria, job_type=job_type)
 
-    res = client.search_contacts(filters, limit=limit)
+    # Seamless ranks prominent (senior) profiles first and has no sort param, so for
+    # non-exec roles we over-fetch and drop obvious executives client-side.
+    wants_exec = any(
+        b in (filters.get("seniority") or []) for b in ("C-Level", "VP", "Director")
+    )
+    fetch_limit = min(limit * 2, 100) if not wants_exec else limit
+    res = client.search_contacts(filters, limit=fetch_limit)
     # The contacts array key varies; handle the common shapes defensively.
     rows = (
         res.get("contacts")
@@ -181,6 +262,9 @@ def source_candidates(
         or (res if isinstance(res, list) else [])
     )
     candidates = [_normalize(r) for r in rows if isinstance(r, dict)]
+    if not wants_exec:
+        candidates = [c for c in candidates if not _looks_exec(c.get("title"))]
+    candidates = candidates[:limit]
     total = (res.get("supplementalData") or {}).get("total") if isinstance(res, dict) else None
 
     out: dict[str, Any] = {
@@ -206,31 +290,62 @@ def source_candidates(
 
 
 def _poll_until_ready(
-    client: SeamlessClient, request_ids: list[str], attempts: int = 6, delay: float = 5.0
+    client: SeamlessClient, request_ids: list[str], attempts: int = 8, delay: float = 6.0
 ) -> list[dict[str, Any]]:
-    """Poll the research endpoint until results land (or attempts run out)."""
+    """Poll the research endpoint until enrichment finishes (or attempts run out).
+
+    Each record carries a `status`; we stop once every record is resolved
+    (complete/duplicate/found) or already has a contact value, and keep polling
+    while any are still 'pending'/'processing'. Transient errors (e.g. 502) retry.
+    """
+    done_states = {"complete", "completed", "duplicate", "found", "enriched", "failed"}
     results: list[dict[str, Any]] = []
     for _ in range(attempts):
-        resp = client.poll_research(request_ids)
-        rows = resp.get("contacts") or resp.get("results") or resp.get("data") or []
+        try:
+            resp = client.poll_research(request_ids)
+        except SeamlessError:
+            time.sleep(delay)
+            continue
+        rows = [r for r in (resp.get("data") or resp.get("contacts")
+                            or resp.get("results") or []) if isinstance(r, dict)]
         if rows:
-            results = [r for r in rows if isinstance(r, dict)]
-            if not resp.get("isMore") and not resp.get("pending"):
+            results = rows
+            resolved = all(
+                (r.get("status") or "complete").lower() in done_states
+                or _first(r, "email", "personalEmail", "email1", "contactPhone1")
+                for r in rows
+            )
+            if resolved:
                 break
         time.sleep(delay)
     return results
 
 
+def _first(record: dict[str, Any], *keys: str) -> str | None:
+    """First non-empty value among the given keys."""
+    for k in keys:
+        v = record.get(k)
+        if v:
+            return v
+    return None
+
+
 def _merge_enrichment(candidates: list[dict[str, Any]], enriched: list[dict[str, Any]]) -> None:
-    """Merge email/phone from enriched records back onto the candidate list by id."""
+    """Merge email/phone from enriched records onto candidates (Seamless field names).
+
+    Emails: email / personalEmail / email1-3.  Phones: contactPhone1 / contactPhone2.
+    Match by searchResultId; fall back to positional order when ids are absent.
+    """
     by_id = {e.get("searchResultId"): e for e in enriched if e.get("searchResultId")}
-    for c in candidates:
+    for i, c in enumerate(candidates):
         e = by_id.get(c["search_result_id"])
+        if e is None and not by_id and i < len(enriched):
+            e = enriched[i]  # positional fallback
         if not e:
             continue
-        emails = e.get("emails") or ([e["email"]] if e.get("email") else [])
-        phones = e.get("phones") or e.get("phoneNumbers") or ([e["phone"]] if e.get("phone") else [])
-        if emails:
-            c["email"] = emails[0] if isinstance(emails, list) else emails
-        if phones:
-            c["phone"] = phones[0] if isinstance(phones, list) else phones
+        email = _first(e, "email", "personalEmail", "email1", "email2", "email3")
+        phone = _first(e, "contactPhone1", "contactPhone2")
+        if email:
+            c["email"] = email
+        if phone:
+            c["phone"] = phone
