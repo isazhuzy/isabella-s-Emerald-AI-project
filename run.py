@@ -27,11 +27,25 @@ def main() -> int:
     ap.add_argument("--type", dest="job_type", default=None,
                     choices=["physician", "finance", "tech", "lab", "general"],
                     help="Force a job-family profile (default: auto-detect)")
+    ap.add_argument("--source", action="store_true",
+                    help="One-step: source candidates from Seamless, create the Loxo job, "
+                         "attach the candidates, and print the job link")
+    ap.add_argument("--source-limit", type=int, default=50,
+                    help="Max candidates to pull from Seamless (default 50)")
+    ap.add_argument("--enrich", action="store_true",
+                    help="Enrich the top sourced candidates with email/phone (spends Seamless credits)")
+    ap.add_argument("--push-candidates", action="store_true", dest="push_candidates",
+                    help="Create sourced candidates as Loxo people and add them to the job "
+                         "(implies --push and --source; writes real records)")
     ap.add_argument("--quiet", action="store_true", help="Print only the artifact path")
     args = ap.parse_args()
 
-    # --publish can't happen without creating the job first, so it implies --push.
-    push = args.push or args.publish
+    # Sourcing is a one-step flow: whenever we source candidates we also create the
+    # Loxo job and attach them to it (so every sourcing run yields a job + link +
+    # candidates). --publish/--push-candidates are explicit supersets of that.
+    source = args.source or args.push_candidates
+    push = args.push or args.publish or source                # sourcing always creates the job
+    push_candidates = args.push_candidates or args.source     # sourcing always attaches candidates
 
     with open(args.transcript, encoding="utf-8") as f:
         transcript = f.read()
@@ -42,9 +56,14 @@ def main() -> int:
         print("✖  --push/--publish requested but Loxo isn't configured (see .env.example).", file=sys.stderr)
         return 2
 
+    if source and not settings.has_seamless:
+        print("✖  --source requested but SEAMLESS_API_KEY isn't set (see .env.example).", file=sys.stderr)
+        return 2
+
     result = run_pipeline(
         transcript, client_name=args.client, push_to_loxo=push, publish=args.publish,
-        job_type=args.job_type,
+        job_type=args.job_type, source=source, source_limit=args.source_limit,
+        enrich_contacts=args.enrich, push_candidates=push_candidates,
     )
 
     if args.quiet:
@@ -69,6 +88,27 @@ def main() -> int:
         if k in d.get("ad_copy", {}):
             print(f"  [{k}] {d['ad_copy'][k][:120]}...")
     print(f"\n--- OUTREACH: {len(d.get('outreach', []))} steps ---")
+    if result.get("sourcing"):
+        s = result["sourcing"]
+        if s.get("error"):
+            print(f"\n--- SEAMLESS SOURCING ---\n  ✖ {s['error']}")
+        else:
+            cands = s.get("candidates", [])
+            tot = f" (of ~{s['total']} matches)" if s.get("total") else ""
+            print(f"\n--- SEAMLESS SOURCING: {len(cands)} candidates{tot}"
+                  f"{' · enriched' if s.get('enriched') else ''} ---")
+            for c in cands[:5]:
+                contact = f" · {c['email']}" if c.get("email") else ""
+                print(f"  • {c.get('name')} — {c.get('title')} @ {c.get('company')}"
+                      f" ({c.get('location')}){contact}")
+            if result.get("candidates_path"):
+                print(f"  → full list: {result['candidates_path']}")
+            pushed = s.get("pushed_to_loxo")
+            if pushed:
+                print(f"  → pushed to Loxo job: {pushed['created']} created"
+                      + (f", {len(pushed['errors'])} errors" if pushed.get("errors") else ""))
+            elif s.get("push_error"):
+                print(f"  → push to Loxo skipped: {s['push_error']}")
     if result.get("loxo"):
         loxo = result["loxo"]
         if loxo.get("job_url"):

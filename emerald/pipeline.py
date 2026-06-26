@@ -49,6 +49,10 @@ def run_pipeline(
     publish: bool = False,
     save_artifact: bool = True,
     job_type: str | None = None,
+    source: bool = False,
+    source_limit: int = 50,
+    enrich_contacts: bool = False,
+    push_candidates: bool = False,
 ) -> dict[str, Any]:
     """Run the full Phase 1 flow. Returns a result dict with all deliverables.
 
@@ -115,6 +119,63 @@ def run_pipeline(
     elif push_to_loxo and job_id:
         result["loxo"]["note_skipped"] = "set LOXO_NOTE_ACTIVITY_TYPE_ID to post the brief"
 
+    # 4b) Optional candidate sourcing via Seamless.AI (once the JD/Booleans exist).
+    #     Maps the generated search_criteria -> Seamless filters -> candidates.
+    #     Never fails the run: errors are captured on the result.
+    if source:
+        if not settings.has_seamless:
+            result["sourcing"] = {"error": "SEAMLESS_API_KEY not set (Enterprise API)."}
+        else:
+            from .seamless import source_candidates  # lazy import
+
+            try:
+                result["sourcing"] = source_candidates(
+                    deliverables.get("search_criteria", {}),
+                    limit=source_limit,
+                    enrich=enrich_contacts,
+                )
+            except Exception as e:  # don't let sourcing crash the pipeline
+                result["sourcing"] = {"error": str(e)}
+
+        # Optionally push sourced candidates into the Loxo job pipeline (B2 headless):
+        # create each as a Loxo person, then add to the job. Needs a created job_id.
+        cands = (result.get("sourcing") or {}).get("candidates") or []
+        if push_candidates and cands:
+            if not job_id:
+                result["sourcing"]["push_error"] = "need --push (a Loxo job) to attach candidates"
+            else:
+                import time
+                pushed, errors = 0, []
+                for i, cand in enumerate(cands):
+                    if i:
+                        time.sleep(0.6)  # gentle pacing — Loxo rate-limits bursts
+                    try:
+                        person = client.create_person(  # type: ignore[union-attr]
+                            name=cand.get("name") or "Unknown",
+                            current_title=cand.get("title"),
+                            current_company=cand.get("company"),
+                            location=cand.get("location"),
+                            linkedin_url=cand.get("linkedin"),
+                            emails=[cand["email"]] if cand.get("email") else None,
+                            phones=[cand["phone"]] if cand.get("phone") else None,
+                        )
+                        pobj = person.get("person", person) if isinstance(person, dict) else {}
+                        pid = pobj.get("id") if isinstance(pobj, dict) else None
+                        if pid:
+                            # title/company can't live on the person; surface them
+                            # (and the source) as the pipeline note for the recruiter.
+                            ctx = " ".join(
+                                x for x in (cand.get("title"),
+                                            f"@ {cand['company']}" if cand.get("company") else "")
+                                if x
+                            )
+                            note = f"Sourced via Seamless — {ctx}".strip(" —") or None
+                            client.add_to_pipeline(job_id, pid, notes=note)  # type: ignore[union-attr]
+                            pushed += 1
+                    except Exception as e:
+                        errors.append(f"{cand.get('name')}: {e}")
+                result["sourcing"]["pushed_to_loxo"] = {"created": pushed, "errors": errors}
+
     # 5) Persist artifacts (JSON + the human-readable brief). Gitignored.
     if save_artifact:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -128,5 +189,19 @@ def run_pipeline(
             f.write(brief_md)
         result["artifact_path"] = f"{base}.json"
         result["brief_path"] = f"{base}_sourcing-brief.md"
+        # Candidate list as a CSV the recruiter can work from.
+        cands = (result.get("sourcing") or {}).get("candidates")
+        if cands:
+            import csv
+            cand_path = f"{base}_candidates.csv"
+            with open(cand_path, "w", newline="") as f:
+                w = csv.DictWriter(
+                    f, fieldnames=["name", "title", "company", "location",
+                                   "linkedin", "email", "phone"]
+                )
+                w.writeheader()
+                for c in cands:
+                    w.writerow({k: c.get(k, "") for k in w.fieldnames})
+            result["candidates_path"] = cand_path
 
     return result

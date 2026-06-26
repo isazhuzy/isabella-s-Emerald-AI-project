@@ -134,6 +134,42 @@ class LoxoClient:
             data["person_event[person_id]"] = person_id
         return self._request("POST", "/person_events", data=data)
 
+    def create_person(
+        self,
+        name: str,
+        current_title: str | None = None,
+        current_company: str | None = None,
+        location: str | None = None,
+        linkedin_url: str | None = None,
+        emails: list[str] | None = None,
+        phones: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a person (candidate) via POST /people.
+
+        Loxo expects bracketed form params; emails/phones are nested arrays, so we
+        send a list of (key, value) tuples to allow repeats. Loxo auto-merges
+        duplicates by contact info / LinkedIn (Settings -> Data enrichment), so
+        re-pushing the same candidate folds into the existing record.
+
+        NOTE: current_title / current_company are NOT settable here — Loxo derives
+        them from work history. They're accepted as args (callers pass them) but
+        surfaced elsewhere (e.g. the pipeline note), not on the person create.
+        """
+        data: list[tuple[str, Any]] = [("person[name]", name or "Unknown")]
+        for key, val in (
+            ("person[location]", location),
+            ("person[linkedin_url]", linkedin_url),
+        ):
+            if val:
+                data.append((key, val))
+        for e in emails or []:
+            if e:
+                data.append(("person[emails][][value]", e))
+        for p in phones or []:
+            if p:
+                data.append(("person[phones][][value]", p))
+        return self._request("POST", "/people", data=data)
+
     # ---- pipeline reads/writes (mainly used in B2; handy for B1 verification) ----
     def get_job_pipeline(self, job_id: str | int) -> Any:
         """GET /jobs/{id}/candidates — everyone on the job + their stage."""
@@ -144,13 +180,15 @@ class LoxoClient:
         job_id: str | int,
         person_id: str | int,
         notes: str | None = None,
-        activity_type_id: str | int = "1550055",  # "Added to Job" (account-specific)
+        activity_type_id: str | int | None = None,
     ) -> dict[str, Any]:
-        """Add an existing person to a job's pipeline (lands at the first stage).
+        """Add an existing person to a job's pipeline (lands at the Sourced stage).
 
-        Implemented as an 'Added to Job' person_event, matching Loxo's own model.
-        Used by the future B2 headless path; in B1 candidates enter via Loxo Source.
+        Implemented as a workflow-stage person_event ('Sourced' by default), matching
+        Loxo's own model. The activity type is account-specific — set
+        LOXO_SOURCED_ACTIVITY_TYPE_ID (discover via activity_types()).
         """
+        activity_type_id = activity_type_id or settings.loxo_sourced_activity_type_id
         data: dict[str, Any] = {
             "person_event[person_id]": person_id,
             "person_event[job_id]": job_id,

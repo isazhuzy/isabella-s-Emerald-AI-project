@@ -17,6 +17,9 @@ class Settings:
     anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
     model: str = os.getenv("EMERALD_MODEL", "claude-sonnet-4-5")
 
+    # Seamless.AI — candidate sourcing / contact enrichment (paid; API is Enterprise).
+    seamless_api_key: str | None = os.getenv("SEAMLESS_API_KEY")
+
     loxo_domain: str | None = os.getenv("LOXO_DOMAIN")
     loxo_slug: str | None = os.getenv("LOXO_SLUG")
     loxo_api_key: str | None = os.getenv("LOXO_API_KEY")
@@ -26,6 +29,9 @@ class Settings:
     # Activity type used to post the sourcing brief as a job note. Discover IDs
     # via client.activity_types(); leave unset to skip posting the note on --push.
     loxo_note_activity_type_id: str | None = os.getenv("LOXO_NOTE_ACTIVITY_TYPE_ID")
+    # Activity type used to place a sourced candidate on a job (a workflow-stage
+    # activity). Defaults to this account's "Sourced" type; override per account.
+    loxo_sourced_activity_type_id: str = os.getenv("LOXO_SOURCED_ACTIVITY_TYPE_ID", "87305")
 
     # ---- B1 pipeline / handoff config (names must match your Loxo workflow) ----
     # Defaults match the live Emerald Resource Group Loxo workflow: the full
@@ -45,6 +51,10 @@ class Settings:
         # NOTE: the Open API lives under /api/{slug}.  Do NOT use /api/v1/...
         # (that path is not part of the Open API and returns 403).
         return f"https://{self.loxo_domain}/api/{self.loxo_slug}"
+
+    @property
+    def has_seamless(self) -> bool:
+        return bool(self.seamless_api_key)
 
     @property
     def has_claude(self) -> bool:
