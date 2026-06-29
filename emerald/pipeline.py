@@ -53,6 +53,7 @@ def run_pipeline(
     source_limit: int = 50,
     enrich_contacts: bool = False,
     push_candidates: bool = False,
+    filter_boolean: str | None = None,
 ) -> dict[str, Any]:
     """Run the full Phase 1 flow. Returns a result dict with all deliverables.
 
@@ -137,6 +138,21 @@ def run_pipeline(
                 )
             except Exception as e:  # don't let sourcing crash the pipeline
                 result["sourcing"] = {"error": str(e)}
+
+        # 4c) Boolean pre-screen: keep only candidates matching the filter and drop
+        #     ("shoot") the rest BEFORE anything reaches Loxo. `auto` uses the
+        #     generated generic Boolean; otherwise pass an explicit expression.
+        if filter_boolean and (result.get("sourcing") or {}).get("candidates"):
+            from .boolean_filter import filter_candidates
+
+            expr = filter_boolean
+            if expr.strip().lower() == "auto":
+                expr = (deliverables.get("boolean_strings") or {}).get("generic", "")
+            kept, dropped = filter_candidates(result["sourcing"]["candidates"], expr)
+            result["sourcing"]["candidates"] = kept
+            result["sourcing"]["filter"] = {
+                "expression": expr, "kept": len(kept), "dropped": len(dropped),
+            }
 
         # Optionally push sourced candidates into the Loxo job pipeline (B2 headless):
         # create each as a Loxo person, then add to the job. Needs a created job_id.

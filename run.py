@@ -37,6 +37,9 @@ def main() -> int:
     ap.add_argument("--push-candidates", action="store_true", dest="push_candidates",
                     help="Create sourced candidates as Loxo people and add them to the job "
                          "(implies --push and --source; writes real records)")
+    ap.add_argument("--filter", dest="filter_boolean", default=None,
+                    help="Boolean to pre-screen candidates BEFORE Loxo (drop non-matches). "
+                         "Pass an expression or 'auto' to use the generated generic Boolean.")
     ap.add_argument("--quiet", action="store_true", help="Print only the artifact path")
     args = ap.parse_args()
 
@@ -64,6 +67,7 @@ def main() -> int:
         transcript, client_name=args.client, push_to_loxo=push, publish=args.publish,
         job_type=args.job_type, source=source, source_limit=args.source_limit,
         enrich_contacts=args.enrich, push_candidates=push_candidates,
+        filter_boolean=args.filter_boolean,
     )
 
     if args.quiet:
@@ -97,6 +101,9 @@ def main() -> int:
             tot = f" (of ~{s['total']} matches)" if s.get("total") else ""
             print(f"\n--- SEAMLESS SOURCING: {len(cands)} candidates{tot}"
                   f"{' · enriched' if s.get('enriched') else ''} ---")
+            if s.get("filter"):
+                fl = s["filter"]
+                print(f"  Boolean pre-screen: {fl['kept']} kept, {fl['dropped']} dropped")
             for c in cands[:5]:
                 contact = f" · {c['email']}" if c.get("email") else ""
                 print(f"  • {c.get('name')} — {c.get('title')} @ {c.get('company')}"
