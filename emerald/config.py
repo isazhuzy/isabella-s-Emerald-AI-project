@@ -20,6 +20,14 @@ class Settings:
     # Seamless.AI — candidate sourcing / contact enrichment (paid; API is Enterprise).
     seamless_api_key: str | None = os.getenv("SEAMLESS_API_KEY")
 
+    # Fireflies.ai — live transcription. The webhook sends a meetingId; we fetch the
+    # transcript via GraphQL. Secret verifies the x-hub-signature (HMAC-SHA256).
+    fireflies_api_key: str | None = os.getenv("FIREFLIES_API_KEY")
+    fireflies_webhook_secret: str | None = os.getenv("FIREFLIES_WEBHOOK_SECRET")
+    # When true, the transcript webhook creates the Loxo job automatically (else it
+    # only generates + saves the artifact). Keep false until you trust the flow.
+    webhook_push: bool = os.getenv("EMERALD_WEBHOOK_PUSH", "false").lower() == "true"
+
     loxo_domain: str | None = os.getenv("LOXO_DOMAIN")
     loxo_slug: str | None = os.getenv("LOXO_SLUG")
     loxo_api_key: str | None = os.getenv("LOXO_API_KEY")

@@ -10,7 +10,10 @@ Python (a laptop, a small VM, Render) and the whole team uses one URL — no ter
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
+import json
 import os
 import secrets
 from typing import Any
@@ -20,6 +23,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from emerald.config import settings
+from emerald.fireflies import fetch_transcript, parse_client_name
 from emerald.pipeline import run_pipeline
 
 app = FastAPI(title="Emerald", version="0.2.0")
@@ -42,17 +46,39 @@ def require_login(creds: HTTPBasicCredentials = Depends(_security)) -> bool:
 
 
 # ----------------------------- webhook (hands-off path) -----------------------------
-def extract_transcript(payload: dict[str, Any]) -> str:
+def _verify_fireflies_signature(raw_body: bytes, header: str | None) -> bool:
+    """Verify the x-hub-signature (HMAC-SHA256) if a secret is configured."""
+    if not settings.fireflies_webhook_secret:
+        return True  # no secret set -> not enforced (dev)
+    if not header:
+        return False
+    expected = hmac.new(
+        settings.fireflies_webhook_secret.encode(), raw_body, hashlib.sha256
+    ).hexdigest()
+    provided = header.split("=", 1)[1] if "=" in header else header
+    return hmac.compare_digest(expected, provided)
+
+
+def _transcript_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
+    """Return (transcript_text, client_name) from a webhook payload.
+
+    Fireflies sends {meetingId, eventType} -> fetch the transcript via GraphQL and
+    derive the client from the meeting title. Other providers may post the transcript
+    text inline -> use it directly.
+    """
+    meeting_id = payload.get("meetingId") or payload.get("meeting_id")
+    if meeting_id:
+        text, title = fetch_transcript(meeting_id)
+        client = parse_client_name(title) or payload.get("client_name", "")
+        return text, client
+    # generic fallback (transcript inline)
     for key in ("transcript", "text", "transcript_text"):
         if isinstance(payload.get(key), str):
-            return payload[key]
+            client = payload.get("client_name") or payload.get("metadata", {}).get("client", "")
+            return payload[key], client
     if isinstance(payload.get("data"), dict):
-        return extract_transcript(payload["data"])
-    return ""
-
-
-def extract_client_name(payload: dict[str, Any]) -> str:
-    return payload.get("client_name") or payload.get("metadata", {}).get("client", "")
+        return _transcript_from_payload(payload["data"])
+    return "", ""
 
 
 @app.get("/health")
@@ -62,18 +88,30 @@ def health() -> dict[str, str]:
 
 @app.post("/webhook/transcript")
 async def on_transcript(request: Request) -> dict[str, Any]:
-    payload = await request.json()
-    transcript = extract_transcript(payload)
+    raw = await request.body()
+    if not _verify_fireflies_signature(raw, request.headers.get("x-hub-signature")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="invalid webhook signature")
+    payload = json.loads(raw or b"{}")
+
+    # Only act on "transcription completed"-type events (ignore other Fireflies events).
+    event = (payload.get("eventType") or "").lower()
+    if event and "complet" not in event and "transcri" not in event:
+        return {"ok": True, "skipped": f"ignored event: {payload.get('eventType')}"}
+
+    transcript, client = _transcript_from_payload(payload)
     if not transcript:
-        return {"ok": False, "error": "no transcript found in payload"}
+        return {"ok": False, "error": "no transcript found (or GraphQL fetch failed)"}
+
     result = run_pipeline(
         transcript,
-        client_name=extract_client_name(payload),
-        push_to_loxo=False,  # flip to True once you trust the gate
+        client_name=client,
+        push_to_loxo=settings.webhook_push,  # EMERALD_WEBHOOK_PUSH=true to auto-create the job
     )
     return {
         "ok": True,
         "title": result["deliverables"].get("title"),
+        "client": client,
         "job_url": (result.get("loxo") or {}).get("job_url"),
         "redaction_hits": result["redaction_hits"],
     }

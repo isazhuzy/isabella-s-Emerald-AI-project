@@ -56,17 +56,25 @@ app.
 | **Fathom** | ✅ bot | ❌ none | ✅ all tiers | low-cost, **Zoom-only** |
 | **Recall.ai** (infra) | ✅ widest | ⚠️ pair w/ telephony | ✅ it *is* an API | building our own notetaker |
 | **Ringover** (cell dialer) | — | ✅ recordable line | **native Loxo** integration | cell intake into Loxo |
+| **RingCentral** (full phone system) | ⚠️ via RingCentral Video | ✅ recordable line | ✅ RingSense API + webhooks (no native Loxo) | one-vendor cell capture + AI, if budget allows |
 
 **Pricing (per seat/mo, annual — vendor-reported, verify):** Fireflies ~$10–$19 ·
-Otter ~$8–$20 (API Enterprise-only) · Fathom ~$15–$29 · Ringover ~$21–$64.
+Otter ~$8–$20 (API Enterprise-only) · Fathom ~$15–$29 · Ringover ~$21–$54 ·
+RingCentral ~$20–$35 base **+ $60/user for RingSense AI transcription**.
 **Build-your-own (usage):** Recall.ai ~$0.50/recording-hr + transcription · Deepgram
 ~$0.26/hr (cheapest speech-to-text) · AssemblyAI ~$0.37/hr.
 
-**Recommendation:** **Fireflies.ai** as primary capture (only option that does Zoom *and*
-phone *and* exposes a webhook) + **Ringover** for cell intake (native Loxo). Fathom as a
-cheap Zoom-only fallback; Recall.ai/Deepgram in reserve for a fully custom notetaker.
-**Verify first:** that the chosen Fireflies tier returns the **full transcript via
-webhook** (not just a summary), and call-recording **consent** laws for our states.
+**Integration/API cost — the key differentiator:**
+- **Ringover** bundles **call recording + transcription/AI summaries + API + webhooks in its base ~$21 tier** — cheapest path to "record → transcribe → feed a pipeline," and it has a **native Loxo** integration.
+- **RingCentral** needs the **Advanced plan (~$25, for auto call recording)** *plus* **RingSense at +$60/user** for transcription — so ~**$85/user/mo** all-in, roughly triple Ringover for the same record+transcribe+API capability, and **no native Loxo** hook (connect via API to Emerald instead). RingSense API access requires that AI license.
+- **Fireflies** ($10–$19) exposes its transcript via **webhook on paid tiers** and integrates with RingCentral as a dialer — so "RingCentral line + Fireflies transcription" is cheaper than buying RingSense.
+
+**Recommendation:** **Fireflies.ai** as primary capture (Zoom *and* phone *and* webhook) +
+**Ringover** for cell intake (native Loxo, all-in-one at ~$21). Consider **RingCentral only
+if you already use it as your phone system** — then add Fireflies rather than the pricey
+RingSense. Fathom as a cheap Zoom-only fallback; Recall.ai/Deepgram in reserve for a custom
+notetaker. **Verify first:** the Fireflies tier returns the **full transcript via webhook**
+(not just a summary); the RingSense license price; and call-recording **consent** laws.
 
 ---
 
@@ -112,3 +120,5 @@ first-class Zapier + webhooks, making it the easier external integration of the 
 - [Drop Cowboy API/developers](https://www.dropcowboy.com/developers) · [Pricing](https://www.dropcowboy.com/pricing/) · [Integrations](https://www.dropcowboy.com/integrations/)
 - [Loxo Open API](https://help.loxo.co/en/articles/446640-loxo-s-open-api) · [Loxo Outreach (channels incl. voicemail drop)](https://recruitingdaily.com/loxo-outreach-a-completely-integrated-communication-platform/)
 - [Seamless.AI API](https://seamless.ai/products/api) · [Seamless.AI pricing 2026](https://www.smarte.pro/blog/seamless-ai-pricing)
+- [RingCentral RingSense API](https://developers.ringcentral.com/ringsense-api) · [RingCentral plans & pricing](https://www.ringcentral.com/office/plansandpricing.html) · [pricing breakdown (RingSense +$60/user)](https://www.nextiva.com/blog/ringcentral-pricing.html)
+- [Ringover pricing](https://www.ringover.com/pricing) · [Ringover pricing guide 2026](https://www.cloudtalk.io/blog/ringover-pricing/)
