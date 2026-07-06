@@ -1,0 +1,14 @@
+# Keep secrets, local junk, and generated artifacts OUT of the container image.
+.env
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+output/
+*.md
+docs/
+examples/
+transcripts/
