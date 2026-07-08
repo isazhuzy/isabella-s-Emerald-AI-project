@@ -235,24 +235,33 @@ _SEARCH_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Boolean W
  .muted{{color:#6b7d72}} .kept{{color:#1b5e3a}} .dropped{{color:#a23a2f}}
  .composed{{background:#eaf5ee;border:1px solid #bcdcc8;padding:.7rem;border-radius:6px;font:13px monospace;white-space:pre-wrap}}
  code{{background:#f4f7f5;padding:0 .25rem;border-radius:3px}}
+ select{{width:100%;padding:.45rem;font-size:13px;margin:.15rem 0 .35rem;color:#2e5c44}}
+ .chips{{margin:.25rem 0 0}}
+ .chip{{background:#eef4f0;border:1px solid #cfe0d6;border-radius:999px;padding:.1rem .6rem;font-size:12px;cursor:pointer;margin:.15rem .25rem 0 0;color:#2e5c44}}
+ .chip.on{{background:#2e7d52;border-color:#2e7d52;color:#fff}}
 </style>
 <h1>Boolean Workbench</h1>
 <p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp; Swap out a Boolean and layer on filters. Optionally paste candidates to see who survives.</p>
 <form method=post action=/search>
- <label>Base Boolean <span class=hint>(paste a generated string, or leave blank to build from filters)</span></label>
+ <label>Base Boolean <span class=hint>(pick a starter, paste a generated string, or leave blank to build from filters)</span></label>
+ __STARTERS__
  <textarea name=base_boolean rows=3 placeholder='("Senior Accountant" OR Accountant) AND (GAAP OR SOX)'>{base_boolean}</textarea>
  <div class=grid>
   <div>
    <label>Must include — ALL of <span class=hint>(AND; comma-separated)</span></label>
    <input type=text name=include_all value="{include_all}" placeholder="CPA, month-end close">
+   __CHIPS_ALL__
    <label>Must include — ANY of <span class=hint>(one OR-group; comma-separated)</span></label>
    <input type=text name=include_any value="{include_any}" placeholder="NetSuite, SAP, Oracle">
+   __CHIPS_ANY__
   </div>
   <div>
    <label>Exclude <span class=hint>(NOT; comma-separated)</span></label>
    <input type=text name=exclude value="{exclude}" placeholder="intern, audit, recruiter">
+   __CHIPS_EXCL__
    <label>Location <span class=hint>(AND'd on; phrase or OR-list)</span></label>
    <input type=text name=location value="{location}" placeholder='"New York" OR NY OR "New Jersey"'>
+   __CHIPS_LOC__
   </div>
  </div>
  <label>Candidates to test <span class=hint>(optional — one per line, or a JSON list of objects)</span></label>
@@ -260,7 +269,135 @@ _SEARCH_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Boolean W
  <button>Compose &amp; test</button>
 </form>
 {results}
+<script>
+function _parts(v){{return v.split(',').map(function(s){{return s.trim()}}).filter(Boolean)}}
+function _sync(){{
+ document.querySelectorAll('.chip').forEach(function(ch){{
+  var have=_parts(document.forms[0][ch.dataset.f].value);
+  var on=ch.dataset.v.split('|').every(function(v){{return have.indexOf(v)>=0}});
+  ch.classList.toggle('on',on);
+ }});
+}}
+document.addEventListener('click',function(e){{
+ var ch=e.target.closest('.chip'); if(!ch)return;
+ var f=document.forms[0][ch.dataset.f], have=_parts(f.value), vals=ch.dataset.v.split('|');
+ var on=vals.every(function(v){{return have.indexOf(v)>=0}});
+ if(on) have=have.filter(function(p){{return vals.indexOf(p)<0}});
+ else vals.forEach(function(v){{if(have.indexOf(v)<0)have.push(v)}});
+ f.value=have.join(', ');
+ _sync();
+}});
+_sync();
+</script>
 """
+
+# Starter Booleans offered in the dropdown — lifted from the family exemplars in
+# emerald/profiles.py (geography stripped out; that's what the Location field is for).
+_STARTER_BOOLEANS: list[tuple[str, str]] = [
+    ("Finance · Senior Accountant — corporate (not audit)",
+     '("Senior Accountant" OR Accountant) AND (reconciliation* OR "journal entries" OR '
+     '"month-end close") AND (Excel OR VLOOKUP OR "pivot tables") AND NOT (audit OR '
+     'assurance OR auditor OR internship)'),
+    ("Finance · Senior Accountant — from public accounting",
+     '("Audit Associate" OR "Senior Auditor" OR "Assurance Senior" OR "Senior Associate") '
+     'AND ("public accounting" OR "CPA firm" OR "Big 4") AND (GAAP OR GAAS OR '
+     '"financial statement audits")'),
+    ("Finance · Accounting Manager / Controller",
+     '("Accounting Manager" OR "Senior Accountant" OR "Assistant Controller" OR Controller) '
+     'AND ("internal controls" OR SOX OR GAAP OR CPA) AND ("month-end close" OR '
+     '"financial statements" OR "general ledger")'),
+    ("Finance · Investment Banking",
+     '("Investment Banking Associate" OR "Transaction Advisory Associate" OR "M&A Associate")'),
+    ("Tech · .NET Developer",
+     'C# AND API AND SQL AND (Angular OR React OR Vue OR TypeScript)'),
+    ("Tech · Network / Systems Engineer",
+     '("systems engineer" OR "network engineer" OR "infrastructure engineer") AND '
+     '("Windows Server" OR Hyper-V OR VMware) AND (SonicWall OR "Cisco Meraki" OR Ubiquiti '
+     'OR firewall) AND NOT ("IT manager" OR "IT director" OR CTO OR "engineering manager" '
+     'OR "team lead")'),
+    ("Tech · SRE / DevOps",
+     '("Site Reliability Engineer" OR SRE OR "DevOps Engineer") AND (AWS OR '
+     '"Amazon Web Services" OR Azure)'),
+    ("Tech · Data Scientist / ML",
+     'Python AND SQL AND (PowerBI OR Tableau OR Alteryx) AND (ML OR "Machine Learning")'),
+    ("Physician · Family / Internal Medicine",
+     '("Primary Care Physician" OR "Internal Medicine Physician" OR "Family Medicine '
+     'Physician") AND ("Board Certified" OR "Board Eligible" OR BC OR BE)'),
+    ("Physician · Pulmonologist",
+     '(Pulmonologist OR "Pulmonary Medicine" OR Pulmonary) AND ("Board Certified" OR '
+     '"Board Eligible" OR BC OR BE OR BE/BC)'),
+    ("Physician · OB/GYN",
+     '(OB/GYN OR OBGYN OR "Obstetrics and Gynecology") AND ("Board Certified" OR '
+     '"Board Eligible" OR BC OR BE)'),
+    ("Lab · QC / Lab Technician",
+     '("lab technician" OR "laboratory technician" OR "quality control technician" OR '
+     'chemist) AND (coatings OR paint OR chemical OR chemistry OR laboratory OR testing) '
+     'AND NOT (manager OR director OR supervisor)'),
+]
+
+# One-click preset chips per filter field. Each chip toggles its terms in/out of the
+# field; '|' separates multiple terms (they land as comma-separated items, matching how
+# augment_boolean splits the field). Location values are OR-fragments, so no commas/'|'.
+_CHIPS: dict[str, list[tuple[str, str]]] = {
+    "include_all": [
+        ("CPA", "CPA"), ("GAAP", "GAAP"), ("SOX", "SOX"),
+        ("Month-end close", "month-end close"), ("General ledger", "general ledger"),
+        ("Excel", "Excel"), ("SQL", "SQL"), ("Board Certified", "Board Certified"),
+        ("Bachelor's", "Bachelor*"),
+    ],
+    "include_any": [
+        ("ERP (NetSuite/SAP/…)", "NetSuite|SAP|Oracle|Great Plains|Dynamics|QuickBooks"),
+        ("BI (PowerBI/Tableau)", "PowerBI|Tableau|Alteryx"),
+        ("Cloud (AWS/Azure)", "AWS|Azure|GCP"),
+        ("Frontend (React/Angular…)", "React|Angular|Vue|TypeScript"),
+        ("BC/BE", "Board Certified|Board Eligible|BC|BE"),
+    ],
+    "exclude": [
+        ("Interns/students", "intern|internship|student"),
+        ("Junior", "junior|entry level"),
+        ("Audit/assurance", "audit|auditor|assurance"),
+        ("Management", "manager|director|supervisor|VP|CTO|team lead"),
+        ("Recruiters", "recruiter|talent acquisition"),
+        ("Contract/freelance", "contractor|freelance"),
+    ],
+    "location": [
+        ("Cleveland metro", 'Cleveland OR "Greater Cleveland" OR Akron OR "Cuyahoga County"'),
+        ("Ohio", "Ohio OR OH"),
+        ("NY tri-state", '"New York" OR NY OR "New Jersey" OR NJ OR Connecticut OR CT'),
+        ("Remote", 'Remote OR "work from home" OR WFH'),
+    ],
+}
+
+
+def _chips_html(field: str) -> str:
+    btns = "".join(
+        f'<button type=button class=chip data-f="{field}" data-v="{html.escape(v)}">'
+        f"{html.escape(lbl)}</button>"
+        for lbl, v in _CHIPS[field]
+    )
+    return f"<div class=chips>{btns}</div>"
+
+
+def _starters_html() -> str:
+    opts = "".join(
+        f'<option value="{html.escape(b)}">{html.escape(lbl)}</option>'
+        for lbl, b in _STARTER_BOOLEANS
+    )
+    return ('<select onchange="if(this.value)document.forms[0].base_boolean.value=this.value">'
+            "<option value=''>— Starter Booleans (pick one to fill the box) —</option>"
+            f"{opts}</select>")
+
+
+# Bake the static presets into the page template once, at import time. (The __TOKENS__
+# are plain .replace targets so the runtime .format() placeholders stay untouched.)
+_SEARCH_PAGE = (
+    _SEARCH_PAGE
+    .replace("__STARTERS__", _starters_html())
+    .replace("__CHIPS_ALL__", _chips_html("include_all"))
+    .replace("__CHIPS_ANY__", _chips_html("include_any"))
+    .replace("__CHIPS_EXCL__", _chips_html("exclude"))
+    .replace("__CHIPS_LOC__", _chips_html("location"))
+)
 
 
 def _parse_candidates(text: str) -> list[dict[str, Any]]:
