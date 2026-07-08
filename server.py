@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from emerald.boolean_filter import augment_boolean, candidate_text, filter_candidates
 from emerald.config import settings
 from emerald.fireflies import fetch_transcript, parse_client_name
 from emerald.pipeline import run_pipeline
@@ -131,7 +132,8 @@ _PAGE = """<!doctype html><meta charset=utf-8><title>Emerald</title>
  .muted{{color:#6b7d72}}
 </style>
 <h1>Emerald</h1>
-<p class=muted>Paste an intake-call transcript &rarr; anonymized JD, Booleans, Loxo job, sourced candidates.</p>
+<p class=muted>Paste an intake-call transcript &rarr; anonymized JD, Booleans, Loxo job, sourced candidates.
+&nbsp;·&nbsp; <a href="/search">🔎 Boolean Workbench &rarr;</a></p>
 <form method=post action=/run>
  <label>Client name (anonymized out)</label>
  <input type=text name=client placeholder="e.g. Merrymeeting Group">
@@ -213,4 +215,134 @@ def run(
         push="checked" if push else "",
         source="checked" if source else "",
         results=_render_results(result),
+    )
+
+
+# ------------------------------ Boolean Workbench (custom search) ------------------------------
+# Swap out the recruiting Boolean / add search filters, and (optionally) test the result
+# against a pasted candidate list — all local, no API keys, works fully offline. This exercises
+# the same engine (emerald.boolean_filter) the pipeline uses to pre-screen sourced candidates.
+
+_SEARCH_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Boolean Workbench</title>
+<style>
+ body{{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
+ h1{{color:#2e7d52}} textarea{{width:100%;padding:.6rem;font:13px monospace}}
+ input[type=text]{{width:100%;padding:.5rem;font:13px sans-serif}} label{{display:block;margin:.7rem 0 .2rem;font-weight:600}}
+ .grid{{display:grid;grid-template-columns:1fr 1fr;gap:0 1.2rem}} .hint{{font-weight:400;color:#6b7d72;font-size:12px}}
+ button{{background:#2e7d52;color:#fff;border:0;padding:.7rem 1.4rem;border-radius:6px;font-size:15px;cursor:pointer;margin-top:.8rem}}
+ pre{{background:#f4f7f5;padding:.8rem;border-radius:6px;overflow:auto;white-space:pre-wrap}}
+ .card{{border:1px solid #d9e4dd;border-radius:8px;padding:1rem;margin:1rem 0}}
+ .muted{{color:#6b7d72}} .kept{{color:#1b5e3a}} .dropped{{color:#a23a2f}}
+ .composed{{background:#eaf5ee;border:1px solid #bcdcc8;padding:.7rem;border-radius:6px;font:13px monospace;white-space:pre-wrap}}
+ code{{background:#f4f7f5;padding:0 .25rem;border-radius:3px}}
+</style>
+<h1>Boolean Workbench</h1>
+<p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp; Swap out a Boolean and layer on filters. Optionally paste candidates to see who survives.</p>
+<form method=post action=/search>
+ <label>Base Boolean <span class=hint>(paste a generated string, or leave blank to build from filters)</span></label>
+ <textarea name=base_boolean rows=3 placeholder='("Senior Accountant" OR Accountant) AND (GAAP OR SOX)'>{base_boolean}</textarea>
+ <div class=grid>
+  <div>
+   <label>Must include — ALL of <span class=hint>(AND; comma-separated)</span></label>
+   <input type=text name=include_all value="{include_all}" placeholder="CPA, month-end close">
+   <label>Must include — ANY of <span class=hint>(one OR-group; comma-separated)</span></label>
+   <input type=text name=include_any value="{include_any}" placeholder="NetSuite, SAP, Oracle">
+  </div>
+  <div>
+   <label>Exclude <span class=hint>(NOT; comma-separated)</span></label>
+   <input type=text name=exclude value="{exclude}" placeholder="intern, audit, recruiter">
+   <label>Location <span class=hint>(AND'd on; phrase or OR-list)</span></label>
+   <input type=text name=location value="{location}" placeholder='"New York" OR NY OR "New Jersey"'>
+  </div>
+ </div>
+ <label>Candidates to test <span class=hint>(optional — one per line, or a JSON list of objects)</span></label>
+ <textarea name=candidates rows=6 placeholder="Jane Doe — Senior Accountant @ Acme · New York&#10;John Smith — Audit Intern @ BigCo · Boston">{candidates}</textarea>
+ <button>Compose &amp; test</button>
+</form>
+{results}
+"""
+
+
+def _parse_candidates(text: str) -> list[dict[str, Any]]:
+    """Turn the pasted candidates box into candidate dicts the filter can screen.
+
+    Accepts a JSON list/object, or free-text lines (one candidate per line). A plain
+    line is stored under `headline` so the whole line is searchable, and kept verbatim
+    under `_raw` for display.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return [data]
+            if isinstance(data, list):
+                return [c for c in data if isinstance(c, dict)]
+        except json.JSONDecodeError:
+            pass  # fall through to line parsing
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            out.append({"_raw": line, "headline": line})
+    return out
+
+
+def _cand_label(c: dict[str, Any]) -> str:
+    if c.get("_raw"):
+        return str(c["_raw"])
+    bits = [c.get("name"), c.get("title"), f"@ {c['company']}" if c.get("company") else "",
+            f"· {c['location']}" if c.get("location") else ""]
+    return " ".join(str(b) for b in bits if b) or candidate_text(c) or "(candidate)"
+
+
+def _render_search(composed: str, kept: list, dropped: list, tested: bool) -> str:
+    parts = ["<div class=card>", "<h3>Composed Boolean</h3>",
+             f"<div class=composed>{_esc(composed) or '<span class=muted>(empty)</span>'}</div>",
+             "<p class=hint>Copy this into LinkedIn Recruiter, a Google X-ray, or Loxo Source. "
+             "Add it as the pre-screen filter with <code>--filter</code> on the CLI.</p>"]
+    if tested:
+        parts.append(f"<h3>Results — <span class=kept>{len(kept)} kept</span>, "
+                     f"<span class=dropped>{len(dropped)} dropped</span></h3>")
+        if kept:
+            parts.append("<p class=kept><b>Kept</b></p><pre>")
+            parts += [f"✓ {_esc(_cand_label(c))}\n" for c in kept]
+            parts.append("</pre>")
+        if dropped:
+            parts.append("<p class=dropped><b>Dropped</b></p><pre>")
+            parts += [f"✗ {_esc(_cand_label(c))}\n" for c in dropped]
+            parts.append("</pre>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+@app.get("/search", response_class=HTMLResponse)
+def search_form(boolean: str = "", _: bool = Depends(require_login)) -> str:
+    return _SEARCH_PAGE.format(base_boolean=_esc(boolean), include_all="", include_any="",
+                               exclude="", location="", candidates="", results="")
+
+
+@app.post("/search", response_class=HTMLResponse)
+def search_run(
+    base_boolean: str = Form(""),
+    include_all: str = Form(""),
+    include_any: str = Form(""),
+    exclude: str = Form(""),
+    location: str = Form(""),
+    candidates: str = Form(""),
+    _: bool = Depends(require_login),
+) -> str:
+    composed = augment_boolean(
+        base=base_boolean, include_all=include_all, include_any=include_any,
+        exclude=exclude, location=location,
+    )
+    cands = _parse_candidates(candidates)
+    kept, dropped = filter_candidates(cands, composed) if cands else ([], [])
+    return _SEARCH_PAGE.format(
+        base_boolean=_esc(base_boolean), include_all=_esc(include_all),
+        include_any=_esc(include_any), exclude=_esc(exclude), location=_esc(location),
+        candidates=_esc(candidates),
+        results=_render_search(composed, kept, dropped, tested=bool(cands)),
     )

@@ -122,6 +122,75 @@ def compile_boolean(expression: str) -> Predicate:
         return lambda _t: True
 
 
+def _quote(term: str) -> str:
+    """Quote a filter term that contains spaces (so it stays one phrase), unless the
+    recruiter already wrote their own Boolean fragment (quotes/operators/parens)."""
+    term = term.strip()
+    if not term:
+        return ""
+    if term[0] in '("' or any(op in f" {term} " for op in (" AND ", " OR ", " NOT ")):
+        return term  # already a Boolean fragment — leave it alone
+    return f'"{term}"' if any(c.isspace() for c in term) else term
+
+
+def _grouped(fragment: str) -> str:
+    """Parenthesize a facet that has a top-level Boolean operator, so AND/OR precedence
+    stays correct when it's AND-ed into the composed string (OR binds looser than AND).
+    Already-wrapped atoms (`(...)`) are left alone."""
+    f = fragment.strip()
+    if not f or (f.startswith("(") and f.endswith(")")):
+        return f
+    if any(op in f" {f} " for op in (" OR ", " AND ", " NOT ")):
+        return f"({f})"
+    return f
+
+
+def _split(items: Any) -> list[str]:
+    """Accept a list, or a comma/newline-separated string, -> clean list of terms."""
+    if items is None:
+        return []
+    if isinstance(items, str):
+        items = re.split(r"[,\n]", items)
+    return [t.strip() for t in items if str(t).strip()]
+
+
+def augment_boolean(
+    base: str = "",
+    include_all: Any = None,
+    include_any: Any = None,
+    exclude: Any = None,
+    location: Any = None,
+) -> str:
+    """Compose a new Boolean by layering recruiter filters onto a base expression.
+
+    This is the "swap the Boolean / add search filters" primitive behind the custom
+    search UI. Every argument is optional and accepts a list OR a comma/newline string.
+
+      base         existing Boolean to build on (kept verbatim, parenthesized)
+      include_all  terms each AND-ed on   (must-have — narrows)
+      include_any  terms OR-ed into one AND-ed group  (any-of — widens within a facet)
+      exclude      terms each NOT-ed       (knock-outs)
+      location     OR-list/phrase AND-ed on (convenience; same effect as include_all)
+
+    Returns a syntactically valid Boolean string that compile_boolean() accepts.
+    """
+    parts: list[str] = []
+    base = (base or "").strip()
+    if base:
+        parts.append(f"({base})")
+    for term in _split(include_all):
+        parts.append(_grouped(_quote(term)))
+    for term in _split(location):
+        parts.append(_grouped(_quote(term)))
+    any_terms = [_quote(t) for t in _split(include_any)]
+    if any_terms:
+        group = any_terms[0] if len(any_terms) == 1 else "(" + " OR ".join(any_terms) + ")"
+        parts.append(_grouped(group))
+    for term in _split(exclude):
+        parts.append(f"NOT {_grouped(_quote(term))}")
+    return " AND ".join(p for p in parts if p)
+
+
 _TEXT_FIELDS = ("name", "title", "company", "location", "headline", "summary",
                 "major", "school", "degree", "email")
 
