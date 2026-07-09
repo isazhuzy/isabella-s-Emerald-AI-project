@@ -22,9 +22,12 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from fastapi import File, UploadFile
+
 from emerald.boolean_filter import augment_boolean, candidate_text, filter_candidates
 from emerald.config import settings
 from emerald.fireflies import fetch_transcript, parse_client_name
+from emerald.handshake import parse_applicants_csv, push_applicants
 from emerald.pipeline import run_pipeline
 
 app = FastAPI(title="Emerald", version="0.2.0")
@@ -133,7 +136,8 @@ _PAGE = """<!doctype html><meta charset=utf-8><title>Emerald</title>
 </style>
 <h1>Emerald</h1>
 <p class=muted>Paste an intake-call transcript &rarr; anonymized JD, Booleans, Loxo job, sourced candidates.
-&nbsp;·&nbsp; <a href="/search">🔎 Boolean Workbench &rarr;</a></p>
+&nbsp;·&nbsp; <a href="/search">🔎 Boolean Workbench &rarr;</a>
+&nbsp;·&nbsp; <a href="/applicants">📥 Handshake applicants &rarr;</a></p>
 <form method=post action=/run>
  <label>Client name (anonymized out)</label>
  <input type=text name=client placeholder="e.g. Merrymeeting Group">
@@ -431,7 +435,9 @@ def _cand_label(c: dict[str, Any]) -> str:
     if c.get("_raw"):
         return str(c["_raw"])
     bits = [c.get("name"), c.get("title"), f"@ {c['company']}" if c.get("company") else "",
-            f"· {c['location']}" if c.get("location") else ""]
+            c.get("school"), c.get("major"),
+            f"· {c['location']}" if c.get("location") else "",
+            f"· {c['email']}" if c.get("email") else ""]
     return " ".join(str(b) for b in bits if b) or candidate_text(c) or "(candidate)"
 
 
@@ -453,6 +459,121 @@ def _render_search(composed: str, kept: list, dropped: list, tested: bool) -> st
             parts.append("</pre>")
     parts.append("</div>")
     return "".join(parts)
+
+
+# --------------------- Handshake applicants (CSV -> screen -> Loxo) ---------------------
+# Handshake has no employer applicants API (ATS sync is Enterprise-only, no Loxo
+# connector), so ingest is the per-job "Download Applicant Data (CSV)" export:
+# upload/paste it here, Boolean-screen it, optionally push survivors onto a Loxo job.
+
+_APPLICANTS_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Handshake applicants</title>
+<style>
+ body{{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
+ h1{{color:#2e7d52}} textarea{{width:100%;padding:.6rem;font:13px monospace}}
+ input[type=text]{{width:100%;padding:.5rem;font:13px sans-serif}} label{{display:block;margin:.7rem 0 .2rem;font-weight:600}}
+ .grid{{display:grid;grid-template-columns:1fr 1fr;gap:0 1.2rem}} .hint{{font-weight:400;color:#6b7d72;font-size:12px}}
+ button{{background:#2e7d52;color:#fff;border:0;padding:.7rem 1.4rem;border-radius:6px;font-size:15px;cursor:pointer;margin-top:.8rem}}
+ pre{{background:#f4f7f5;padding:.8rem;border-radius:6px;overflow:auto;white-space:pre-wrap}}
+ .card{{border:1px solid #d9e4dd;border-radius:8px;padding:1rem;margin:1rem 0}}
+ .muted{{color:#6b7d72}} .kept{{color:#1b5e3a}} .dropped{{color:#a23a2f}} .err{{color:#a23a2f}}
+ .row{{display:flex;gap:1.5rem;margin:.8rem 0}} .row label{{font-weight:400;margin:0}}
+</style>
+<h1>Handshake applicants</h1>
+<p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp;
+In Handshake open the job &rarr; Applicants &rarr; <b>Download Applicant Data (CSV)</b>, then upload it here.
+Screen with a Boolean (build one in the <a href="/search">Workbench</a>) and push the keepers onto the Loxo job.</p>
+<form method=post action=/applicants enctype=multipart/form-data>
+ <label>Applicant CSV <span class=hint>(upload the Handshake export, or paste its contents below)</span></label>
+ <input type=file name=csv_file accept=".csv,text/csv">
+ <textarea name=csv_text rows=5 placeholder="First Name,Last Name,Email,School,Major,...">{csv_text}</textarea>
+ <label>Screening Boolean <span class=hint>(matches ANY column of the export; blank = keep everyone)</span></label>
+ <textarea name=boolean rows=2 placeholder='(Accounting OR Finance) AND (CPA OR "CPA eligible") AND NOT intern'>{boolean}</textarea>
+ <div class=grid>
+  <div>
+   <label>Loxo job # <span class=hint>(the job the keepers get attached to)</span></label>
+   <input type=text name=job_id value="{job_id}" placeholder="3621461">
+  </div>
+  <div>
+   <div class=row style="margin-top:2.1rem">
+    <label><input type=checkbox name=push value=1 {push}> Push kept applicants to Loxo</label>
+   </div>
+  </div>
+ </div>
+ <button>Screen{push_verb}</button>
+</form>
+{results}
+"""
+
+
+def _render_applicants(kept: list, dropped: list, boolean: str,
+                       push_result: dict[str, Any] | None, push_error: str) -> str:
+    parts = ["<div class=card>",
+             f"<h3>Screened — <span class=kept>{len(kept)} kept</span>, "
+             f"<span class=dropped>{len(dropped)} dropped</span>"
+             f"{'' if boolean.strip() else ' <span class=hint>(no Boolean — kept everyone)</span>'}</h3>"]
+    if push_result is not None:
+        parts.append(f"<p class=kept><b>Pushed to Loxo: {push_result.get('created', 0)} "
+                     f"added to the job pipeline.</b></p>")
+        if push_result.get("errors"):
+            parts.append("<p class=err><b>Push errors</b></p><pre>")
+            parts += [f"! {_esc(e)}\n" for e in push_result["errors"]]
+            parts.append("</pre>")
+    if push_error:
+        parts.append(f"<p class=err><b>{_esc(push_error)}</b></p>")
+    if kept:
+        parts.append("<p class=kept><b>Kept</b></p><pre>")
+        parts += [f"✓ {_esc(_cand_label(c))}\n" for c in kept]
+        parts.append("</pre>")
+    if dropped:
+        parts.append("<p class=dropped><b>Dropped</b></p><pre>")
+        parts += [f"✗ {_esc(_cand_label(c))}\n" for c in dropped]
+        parts.append("</pre>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+@app.get("/applicants", response_class=HTMLResponse)
+def applicants_form(_: bool = Depends(require_login)) -> str:
+    return _APPLICANTS_PAGE.format(csv_text="", boolean="", job_id="", push="",
+                                   push_verb="", results="")
+
+
+@app.post("/applicants", response_class=HTMLResponse)
+async def applicants_run(
+    csv_text: str = Form(""),
+    csv_file: UploadFile | None = File(None),
+    boolean: str = Form(""),
+    job_id: str = Form(""),
+    push: bool = Form(False),
+    _: bool = Depends(require_login),
+) -> str:
+    text = csv_text
+    if csv_file and csv_file.filename:
+        text = (await csv_file.read()).decode("utf-8-sig", errors="replace")
+    applicants = parse_applicants_csv(text)
+    if boolean.strip():
+        kept, dropped = filter_candidates(applicants, boolean)
+    else:
+        kept, dropped = applicants, []
+
+    push_result, push_error = None, ""
+    if push and kept:
+        if not job_id.strip():
+            push_error = "Push skipped: enter the Loxo job # to attach the keepers to."
+        else:
+            try:
+                push_result = push_applicants(kept, job_id.strip())
+            except Exception as e:
+                push_error = f"Push failed: {e}"
+
+    results = ("<p class=muted>No applicants found — upload the Handshake CSV "
+               "(or paste it) and try again.</p>" if not applicants
+               else _render_applicants(kept, dropped, boolean, push_result, push_error))
+    return _APPLICANTS_PAGE.format(
+        csv_text=_esc(csv_text), boolean=_esc(boolean), job_id=_esc(job_id),
+        push="checked" if push else "", push_verb=" &amp; push" if push else "",
+        results=results,
+    )
 
 
 @app.get("/search", response_class=HTMLResponse)
