@@ -34,6 +34,10 @@ class Settings:
     loxo_default_job_type_id: str | None = os.getenv("LOXO_DEFAULT_JOB_TYPE_ID")
     loxo_default_company_id: str | None = os.getenv("LOXO_DEFAULT_COMPANY_ID")
     loxo_default_owner_id: str | None = os.getenv("LOXO_DEFAULT_OWNER_ID")
+    # Job "belongs to" wiring. Loxo assigns a job owner by USER EMAIL (array),
+    # not by id — see the jobs_create schema's job[owner_emails][]. Comma-separate
+    # for co-owners. These must be Loxo login emails (discover via users_index).
+    loxo_default_owner_emails_raw: str | None = os.getenv("LOXO_DEFAULT_OWNER_EMAILS")
     # Activity type used to post the sourcing brief as a job note. Discover IDs
     # via client.activity_types(); leave unset to skip posting the note on --push.
     loxo_note_activity_type_id: str | None = os.getenv("LOXO_NOTE_ACTIVITY_TYPE_ID")
@@ -51,6 +55,11 @@ class Settings:
         "LOXO_OUTREACH_CAMPAIGN_NAME", "Confidential Outreach"
     )
     enrich_top_n: int = int(os.getenv("EMERALD_ENRICH_TOP_N", "20"))
+
+    @property
+    def loxo_default_owner_emails(self) -> list[str]:
+        raw = self.loxo_default_owner_emails_raw
+        return [e.strip() for e in raw.split(",") if e.strip()] if raw else []
 
     @property
     def loxo_base_url(self) -> str | None:

@@ -77,11 +77,20 @@ class LoxoClient:
         company_id: str | int | None = None,
         salary: str | None = None,
         published: bool = False,
+        owner_emails: list[str] | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """POST /jobs. Created UNPUBLISHED by default (review before it goes live)."""
+        """POST /jobs. Created UNPUBLISHED by default (review before it goes live).
+
+        owner_emails assigns the job's owner(s) — this is what makes the job
+        "belong" to a recruiter (shows under their My Jobs, filterable/assignable).
+        Loxo takes the owner as an array of Loxo login emails (job[owner_emails][]),
+        NOT a user id. Defaults to LOXO_DEFAULT_OWNER_EMAILS when not passed.
+        """
         job_type_id = job_type_id or settings.loxo_default_job_type_id
         company_id = company_id or settings.loxo_default_company_id
+        if owner_emails is None:
+            owner_emails = settings.loxo_default_owner_emails
         if not job_type_id or not company_id:
             raise LoxoError(
                 "Loxo requires job_type_id and company_id. Set "
@@ -98,6 +107,9 @@ class LoxoClient:
         }
         if salary:
             data["job[salary]"] = salary
+        if owner_emails:
+            # requests encodes a list value as repeated job[owner_emails][]= params.
+            data["job[owner_emails][]"] = owner_emails
         for k, v in (extra or {}).items():
             data[f"job[{k}]"] = v
         return self._request("POST", "/jobs", data=data)

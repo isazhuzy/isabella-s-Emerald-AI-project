@@ -28,6 +28,8 @@ services:
       - key: LOXO_NOTE_ACTIVITY_TYPE_ID
         sync: false
       # --- non-secret config ---
+      - key: LOXO_DEFAULT_OWNER_EMAILS
+        value: mark@emeraldresourcegroup.com   # job "belongs to" owner; comma-sep for co-owners
       - key: EMERALD_MODEL
         value: claude-opus-4-8
       - key: EMERALD_UI_PASSWORD

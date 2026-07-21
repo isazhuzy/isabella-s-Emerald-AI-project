@@ -98,8 +98,8 @@ def run_pipeline(
         job_obj = job.get("job", job) if isinstance(job, dict) else {}
         job_id = job_obj.get("id") if isinstance(job_obj, dict) else None
         # Clickable Loxo UI link for the created job (the recruiter app, not the
-        # API path). API jobs have no owner, so they're hard to find by browsing —
-        # this direct link is the reliable way to open them.
+        # API path). Jobs auto-belong to LOXO_DEFAULT_OWNER_EMAILS when set (so they
+        # show under that recruiter's My Jobs); this direct link opens them either way.
         agency_id = job_obj.get("agency_id") if isinstance(job_obj, dict) else None
         if job_id and agency_id and settings.loxo_domain:
             result["loxo"]["job_url"] = (
