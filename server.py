@@ -87,7 +87,14 @@ def _transcript_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # commit/owner markers make a deploy externally verifiable with one curl.
+    # Render injects RENDER_GIT_COMMIT automatically; owner reflects the live
+    # LOXO_DEFAULT_OWNER_EMAILS env var (so you can confirm the Blueprint synced).
+    return {
+        "status": "ok",
+        "commit": (os.getenv("RENDER_GIT_COMMIT") or "local")[:7],
+        "owner_default": ",".join(settings.loxo_default_owner_emails) or "(unset)",
+    }
 
 
 @app.post("/webhook/transcript")
