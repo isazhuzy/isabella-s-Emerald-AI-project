@@ -55,6 +55,10 @@ class Settings:
         "LOXO_OUTREACH_CAMPAIGN_NAME", "Confidential Outreach"
     )
     enrich_top_n: int = int(os.getenv("EMERALD_ENRICH_TOP_N", "20"))
+    # Target size of the sourced long list handed to the recruiter (spec: 75–150).
+    # We over-fetch and drop obvious mismatches, so the delivered count lands at or
+    # just under this. Raise/lower per role via EMERALD_SOURCE_LIMIT.
+    source_limit: int = int(os.getenv("EMERALD_SOURCE_LIMIT", "150"))
 
     @property
     def loxo_default_owner_emails(self) -> list[str]:

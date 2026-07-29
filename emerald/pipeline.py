@@ -50,7 +50,7 @@ def run_pipeline(
     save_artifact: bool = True,
     job_type: str | None = None,
     source: bool = False,
-    source_limit: int = 50,
+    source_limit: int | None = None,
     enrich_contacts: bool = False,
     push_candidates: bool = False,
     filter_boolean: str | None = None,
@@ -62,6 +62,10 @@ def run_pipeline(
     careers page instead of unpublished (JD is already anonymized, but default stays
     unpublished for human review).
     """
+    # Default the long-list size to the configured target (spec: 75–150).
+    if source_limit is None:
+        source_limit = settings.source_limit
+
     # 1) Generate (Claude, or offline mock if no key)
     deliverables = generate_deliverables(transcript, client_name, job_type=job_type)
 
@@ -134,6 +138,7 @@ def run_pipeline(
                     deliverables.get("search_criteria", {}),
                     limit=source_limit,
                     enrich=enrich_contacts,
+                    enrich_top_n=settings.enrich_top_n,  # keep in sync with the brief (top 15–20)
                     job_type=deliverables.get("_job_type"),
                 )
             except Exception as e:  # don't let sourcing crash the pipeline

@@ -30,8 +30,9 @@ def main() -> int:
     ap.add_argument("--source", action="store_true",
                     help="One-step: source candidates from Seamless, create the Loxo job, "
                          "attach the candidates, and print the job link")
-    ap.add_argument("--source-limit", type=int, default=50,
-                    help="Max candidates to pull from Seamless (default 50)")
+    ap.add_argument("--source-limit", type=int, default=settings.source_limit,
+                    help=f"Max candidates to pull from Seamless (default {settings.source_limit}; "
+                         "the 75–150 long-list target, set via EMERALD_SOURCE_LIMIT)")
     ap.add_argument("--enrich", action="store_true",
                     help="Enrich the top sourced candidates with email/phone (spends Seamless credits)")
     ap.add_argument("--push-candidates", action="store_true", dest="push_candidates",

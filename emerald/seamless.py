@@ -252,7 +252,9 @@ def source_candidates(
     wants_exec = any(
         b in (filters.get("seniority") or []) for b in ("C-Level", "VP", "Director")
     )
-    fetch_limit = min(limit * 2, 100) if not wants_exec else limit
+    # Over-fetch (2x) so dropping obvious execs still leaves `limit` candidates. Cap at
+    # 300 so a 150-target long list is reachable (spec: 75–150) without unbounded pulls.
+    fetch_limit = min(limit * 2, 300) if not wants_exec else limit
     res = client.search_contacts(filters, limit=fetch_limit)
     # The contacts array key varies; handle the common shapes defensively.
     rows = (
