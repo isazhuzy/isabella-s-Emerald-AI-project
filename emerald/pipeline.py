@@ -42,6 +42,58 @@ def _salary_str(comp: dict[str, Any] | None) -> str | None:
     return None
 
 
+def push_sourced_candidates(
+    job_id: str | int,
+    candidates: list[dict[str, Any]],
+    client: Any = None,
+    pace: float = 0.6,
+) -> dict[str, Any]:
+    """Create each sourced candidate as a Loxo person and add it to the job pipeline.
+
+    Slow by design: Loxo rate-limits bursts, so we pace ~`pace`s between people — a
+    150-candidate push takes several minutes. Callers that must return quickly (the web
+    UI) run this in the background; the CLI calls it inline. Never raises: per-candidate
+    failures are collected and returned as {created, errors}.
+    """
+    import time
+
+    if client is None:
+        from .loxo import LoxoClient  # lazy: only needed when actually pushing
+
+        client = LoxoClient()
+
+    pushed, errors = 0, []
+    for i, cand in enumerate(candidates):
+        if i:
+            time.sleep(pace)  # gentle pacing — Loxo rate-limits bursts
+        try:
+            person = client.create_person(
+                name=cand.get("name") or "Unknown",
+                current_title=cand.get("title"),
+                current_company=cand.get("company"),
+                location=cand.get("location"),
+                linkedin_url=cand.get("linkedin"),
+                emails=[cand["email"]] if cand.get("email") else None,
+                phones=[cand["phone"]] if cand.get("phone") else None,
+            )
+            pobj = person.get("person", person) if isinstance(person, dict) else {}
+            pid = pobj.get("id") if isinstance(pobj, dict) else None
+            if pid:
+                # title/company can't live on the person; surface them (and the
+                # source) as the pipeline note for the recruiter.
+                ctx = " ".join(
+                    x for x in (cand.get("title"),
+                                f"@ {cand['company']}" if cand.get("company") else "")
+                    if x
+                )
+                note = f"Sourced via Seamless — {ctx}".strip(" —") or None
+                client.add_to_pipeline(job_id, pid, notes=note)
+                pushed += 1
+        except Exception as e:
+            errors.append(f"{cand.get('name')}: {e}")
+    return {"created": pushed, "errors": errors}
+
+
 def run_pipeline(
     transcript: str,
     client_name: str = "",
@@ -101,6 +153,7 @@ def run_pipeline(
         # Loxo wraps the created job as {"job": {"id": ...}}; unwrap if needed.
         job_obj = job.get("job", job) if isinstance(job, dict) else {}
         job_id = job_obj.get("id") if isinstance(job_obj, dict) else None
+        result["loxo"]["job_id"] = job_id  # let callers schedule a background push
         # Clickable Loxo UI link for the created job (the recruiter app, not the
         # API path). Jobs auto-belong to LOXO_DEFAULT_OWNER_EMAILS when set (so they
         # show under that recruiter's My Jobs); this direct link opens them either way.
@@ -166,37 +219,9 @@ def run_pipeline(
             if not job_id:
                 result["sourcing"]["push_error"] = "need --push (a Loxo job) to attach candidates"
             else:
-                import time
-                pushed, errors = 0, []
-                for i, cand in enumerate(cands):
-                    if i:
-                        time.sleep(0.6)  # gentle pacing — Loxo rate-limits bursts
-                    try:
-                        person = client.create_person(  # type: ignore[union-attr]
-                            name=cand.get("name") or "Unknown",
-                            current_title=cand.get("title"),
-                            current_company=cand.get("company"),
-                            location=cand.get("location"),
-                            linkedin_url=cand.get("linkedin"),
-                            emails=[cand["email"]] if cand.get("email") else None,
-                            phones=[cand["phone"]] if cand.get("phone") else None,
-                        )
-                        pobj = person.get("person", person) if isinstance(person, dict) else {}
-                        pid = pobj.get("id") if isinstance(pobj, dict) else None
-                        if pid:
-                            # title/company can't live on the person; surface them
-                            # (and the source) as the pipeline note for the recruiter.
-                            ctx = " ".join(
-                                x for x in (cand.get("title"),
-                                            f"@ {cand['company']}" if cand.get("company") else "")
-                                if x
-                            )
-                            note = f"Sourced via Seamless — {ctx}".strip(" —") or None
-                            client.add_to_pipeline(job_id, pid, notes=note)  # type: ignore[union-attr]
-                            pushed += 1
-                    except Exception as e:
-                        errors.append(f"{cand.get('name')}: {e}")
-                result["sourcing"]["pushed_to_loxo"] = {"created": pushed, "errors": errors}
+                result["sourcing"]["pushed_to_loxo"] = push_sourced_candidates(
+                    job_id, cands, client=client
+                )
 
     # 5) Persist artifacts (JSON + the human-readable brief). Gitignored.
     if save_artifact:

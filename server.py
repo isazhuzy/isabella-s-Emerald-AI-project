@@ -18,7 +18,7 @@ import os
 import secrets
 from typing import Any
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -28,7 +28,7 @@ from emerald.boolean_filter import augment_boolean, candidate_text, filter_candi
 from emerald.config import settings
 from emerald.fireflies import fetch_transcript, parse_client_name
 from emerald.handshake import parse_applicants_csv, push_applicants
-from emerald.pipeline import run_pipeline
+from emerald.pipeline import push_sourced_candidates, run_pipeline
 
 app = FastAPI(title="Emerald", version="0.2.0")
 
@@ -186,12 +186,17 @@ def _render_results(result: dict[str, Any]) -> str:
         head = f"<h3>Sourced candidates: {len(s['candidates'])}"
         if pushed is not None:
             head += f" · {pushed} added to Loxo"
+        elif s.get("push_queued"):
+            head += (f" · {s['push_queued']} queued — adding to the Loxo job in the "
+                     "background (a few minutes; safe to leave this page)")
         parts.append(head + "</h3><pre>")
         for c in s["candidates"][:50]:
             contact = f" · {_esc(c.get('email'))}" if c.get("email") else ""
             parts.append(f"• {_esc(c.get('name'))} — {_esc(c.get('title'))} @ "
                          f"{_esc(c.get('company'))}{contact}\n")
         parts.append("</pre>")
+        if s.get("push_error"):
+            parts.append(f"<p class=muted>Attach to Loxo: {_esc(s['push_error'])}</p>")
     elif s.get("error"):
         parts.append(f"<p class=muted>Sourcing: {_esc(s['error'])}</p>")
     parts.append("</div>")
@@ -205,6 +210,7 @@ def home(_: bool = Depends(require_login)) -> str:
 
 @app.post("/run", response_class=HTMLResponse)
 def run(
+    background_tasks: BackgroundTasks,
     transcript: str = Form(""),
     client: str = Form(""),
     push: bool = Form(False),
@@ -214,13 +220,26 @@ def run(
     if not transcript.strip():
         return _PAGE.format(transcript="", push="", source="",
                             results="<p class=muted>Please paste a transcript.</p>")
+    # Everything except the candidate push is fast (generation, Loxo job, sourcing
+    # search, brief). Pushing 75–150 people into Loxo one-by-one takes minutes and would
+    # time out the browser, so we defer that to a background task and return immediately.
     result = run_pipeline(
         transcript,
         client_name=client,
         push_to_loxo=push or source,   # sourcing needs a job to attach to
         source=source,
-        push_candidates=source,
+        push_candidates=False,         # deferred to the background task below
     )
+    if source:
+        job_id = (result.get("loxo") or {}).get("job_id")
+        cands = (result.get("sourcing") or {}).get("candidates") or []
+        if job_id and cands:
+            background_tasks.add_task(push_sourced_candidates, job_id, cands)
+            result["sourcing"]["push_queued"] = len(cands)
+        elif cands and not job_id:
+            result["sourcing"]["push_error"] = (
+                "no Loxo job was created, so candidates weren't attached."
+            )
     return _PAGE.format(
         transcript=_esc(transcript),
         push="checked" if push else "",
