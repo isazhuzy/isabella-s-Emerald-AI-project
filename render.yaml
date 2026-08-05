@@ -5,10 +5,20 @@ services:
   - type: web
     name: emerald
     runtime: python
-    plan: free                       # bump to "starter" ($7/mo) to avoid idle cold-starts
+    # Persistent disks require Starter+ (free instances can't mount one). Starter also
+    # removes idle cold-starts. NOTE: this plan change is billing-affecting — Render will
+    # hold it for your approval in the dashboard before it takes effect.
+    plan: starter                    # ~$7/mo
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    # Persistent disk so output/ (candidate CSVs + per-job JSON stores) survives
+    # redeploys/restarts. Mounted at the repo's output/ dir (Render checks out to
+    # /opt/render/project/src). 1 GB is the minimum (~$0.25/GB/mo).
+    disk:
+      name: emerald-output
+      mountPath: /opt/render/project/src/output
+      sizeGB: 1
     envVars:
       # --- secrets: enter these in the Render dashboard (not stored in git) ---
       - key: ANTHROPIC_API_KEY

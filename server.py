@@ -10,16 +10,18 @@ Python (a laptop, a small VM, Render) and the whole team uses one URL — no ter
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import hmac
 import html
 import json
 import os
 import secrets
+from datetime import datetime
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from fastapi import File, UploadFile
@@ -28,7 +30,12 @@ from emerald.boolean_filter import augment_boolean, candidate_text, filter_candi
 from emerald.config import settings
 from emerald.fireflies import fetch_transcript, parse_client_name
 from emerald.handshake import parse_applicants_csv, push_applicants
-from emerald.pipeline import push_sourced_candidates, run_pipeline
+from emerald.pipeline import (
+    CANDIDATES_DIR,
+    OUTPUT_DIR,
+    push_sourced_candidates,
+    run_pipeline,
+)
 
 app = FastAPI(title="Emerald", version="0.2.0")
 
@@ -97,8 +104,88 @@ def health() -> dict[str, str]:
     }
 
 
+# --------------------------- candidate file downloads --------------------------------
+# The pipeline writes the fetched candidates to output/ (a per-run CSV and a durable
+# per-job JSON in output/candidates/). These routes make those files downloadable from
+# the site, behind the same login as the rest of the UI.
+#
+# NOTE: on Render's free plan the filesystem is EPHEMERAL — files written here are lost
+# on redeploy/restart/idle spin-down. Attach a persistent disk (see render.yaml) to keep
+# them across restarts.
+
+def _safe_output_file(subdir: str, name: str) -> str:
+    """Resolve a requested download to an absolute path INSIDE output/ (or 404).
+
+    Path-traversal safe: we take only the bare filename and confirm the resolved path
+    sits within the allowed directory before serving it.
+    """
+    base = os.path.realpath(os.path.join(OUTPUT_DIR, subdir) if subdir else OUTPUT_DIR)
+    path = os.path.realpath(os.path.join(base, os.path.basename(name)))
+    if not (path == base or path.startswith(base + os.sep)) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="file not found")
+    return path
+
+
+def _file_rows(paths: list[str], url_prefix: str) -> str:
+    rows = []
+    for p in sorted(paths, key=os.path.getmtime, reverse=True):
+        name = os.path.basename(p)
+        when = datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M")
+        kb = max(os.path.getsize(p) // 1024, 1)
+        rows.append(
+            f'<tr><td><a href="{url_prefix}/{_esc(name)}">{_esc(name)}</a></td>'
+            f"<td class=muted>{when}</td><td class=muted>{kb} KB</td></tr>"
+        )
+    return "".join(rows)
+
+
+_CANDIDATES_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Emerald · Candidate files</title>
+<style>
+ body{{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
+ h1{{color:#2e7d52}} h2{{color:#2e7d52;font-size:1.05rem;margin-top:1.6rem}}
+ table{{border-collapse:collapse;width:100%}} td,th{{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #e5ece8}}
+ a{{color:#1b5e3a}} .muted{{color:#6b7d72}} .empty{{color:#6b7d72}}
+</style>
+<h1>Candidate files</h1>
+<p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp; Sourced candidate exports, newest first.</p>
+<h2>Per-run CSVs</h2>
+{csv_table}
+<h2>Per-job stores (JSON)</h2>
+{json_table}
+"""
+
+
+@app.get("/candidates", response_class=HTMLResponse)
+def candidates_index(_: bool = Depends(require_login)) -> str:
+    csvs = glob.glob(os.path.join(OUTPUT_DIR, "*_candidates.csv"))
+    jsons = glob.glob(os.path.join(CANDIDATES_DIR, "*.json"))
+    csv_rows = _file_rows(csvs, "/download/csv")
+    json_rows = _file_rows(jsons, "/download/candidates")
+    return _CANDIDATES_PAGE.format(
+        csv_table=(f"<table>{csv_rows}</table>" if csv_rows
+                   else "<p class=empty>No candidate CSVs yet — run a source to create one.</p>"),
+        json_table=(f"<table>{json_rows}</table>" if json_rows
+                    else "<p class=empty>No per-job stores yet.</p>"),
+    )
+
+
+@app.get("/download/csv/{name}")
+def download_csv(name: str, _: bool = Depends(require_login)) -> FileResponse:
+    path = _safe_output_file("", name)
+    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
+
+
+@app.get("/download/candidates/{name}")
+def download_candidate_store(name: str, _: bool = Depends(require_login)) -> FileResponse:
+    path = _safe_output_file("candidates", name)
+    return FileResponse(path, media_type="application/json", filename=os.path.basename(path))
+
+
+# --------------------------------- webhook (hands-off path) --------------------------
 @app.post("/webhook/transcript")
-async def on_transcript(request: Request) -> dict[str, Any]:
+async def on_transcript(
+    request: Request, background_tasks: BackgroundTasks
+) -> dict[str, Any]:
     raw = await request.body()
     if not _verify_fireflies_signature(raw, request.headers.get("x-hub-signature")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
@@ -114,22 +201,45 @@ async def on_transcript(request: Request) -> dict[str, Any]:
     if not transcript:
         return {"ok": False, "error": "no transcript found (or GraphQL fetch failed)"}
 
+    # Hands-off run. Each stage is opt-in via env flags so the webhook does nothing
+    # surprising until you turn it on:
+    #   EMERALD_WEBHOOK_PUSH    -> create the Loxo job (JD lands in the Description tab)
+    #   EMERALD_WEBHOOK_PUBLISH -> publish it live (careers page); default OFF
+    #   EMERALD_WEBHOOK_SOURCE  -> source candidates and store them (output/candidates/)
+    #   EMERALD_WEBHOOK_ENRICH  -> also gather their contacts (email/phone) and store
     result = run_pipeline(
         transcript,
         client_name=client,
-        push_to_loxo=settings.webhook_push,  # EMERALD_WEBHOOK_PUSH=true to auto-create the job
+        push_to_loxo=settings.webhook_push,
+        publish=settings.webhook_publish,
+        source=settings.webhook_source,
+        enrich_contacts=settings.webhook_enrich,
     )
+
+    # If we both created a job AND sourced candidates, attach them to the job pipeline
+    # in the background (creating each as a Loxo person carries their contacts across).
+    # Pushing 75-150 people one-by-one takes minutes, so never do it inline.
+    sourcing = result.get("sourcing") or {}
+    job_id = (result.get("loxo") or {}).get("job_id")
+    cands = sourcing.get("candidates") or []
+    if job_id and cands:
+        background_tasks.add_task(push_sourced_candidates, job_id, cands)
+
     return {
         "ok": True,
         "title": result["deliverables"].get("title"),
         "client": client,
         "job_url": (result.get("loxo") or {}).get("job_url"),
         "redaction_hits": result["redaction_hits"],
+        "sourced": len(cands),
+        "contacts_gathered": sum(1 for c in cands if c.get("email") or c.get("phone")),
+        "candidate_store": result.get("candidate_store_path"),
+        "queued_to_loxo": bool(job_id and cands),
     }
 
 
 # --------------------------------- web UI (browser) ---------------------------------
-_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald</title>
+_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Emerald</title>
 <style>
  body{{font:15px/1.5 system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
  h1{{color:#2e7d52}} textarea{{width:100%;height:220px;padding:.6rem;font:13px monospace}}
@@ -144,7 +254,8 @@ _PAGE = """<!doctype html><meta charset=utf-8><title>Emerald</title>
 <h1>Emerald</h1>
 <p class=muted>Paste an intake-call transcript &rarr; anonymized JD, Booleans, Loxo job, sourced candidates.
 &nbsp;·&nbsp; <a href="/search">🔎 Boolean Workbench &rarr;</a>
-&nbsp;·&nbsp; <a href="/applicants">📥 Handshake applicants &rarr;</a></p>
+&nbsp;·&nbsp; <a href="/applicants">📥 Handshake applicants &rarr;</a>
+&nbsp;·&nbsp; <a href="/candidates">📄 Candidate CSVs &rarr;</a></p>
 <form method=post action=/run>
  <label>Client name (anonymized out)</label>
  <input type=text name=client placeholder="e.g. Merrymeeting Group">
@@ -195,6 +306,10 @@ def _render_results(result: dict[str, Any]) -> str:
             parts.append(f"• {_esc(c.get('name'))} — {_esc(c.get('title'))} @ "
                          f"{_esc(c.get('company'))}{contact}\n")
         parts.append("</pre>")
+        cp = result.get("candidates_path")
+        if cp:
+            parts.append(f'<p><a class=job href="/download/csv/{_esc(os.path.basename(cp))}">'
+                         f"⬇ Download candidates CSV</a></p>")
         if s.get("push_error"):
             parts.append(f"<p class=muted>Attach to Loxo: {_esc(s['push_error'])}</p>")
     elif s.get("error"):
@@ -253,7 +368,7 @@ def run(
 # against a pasted candidate list — all local, no API keys, works fully offline. This exercises
 # the same engine (emerald.boolean_filter) the pipeline uses to pre-screen sourced candidates.
 
-_SEARCH_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Boolean Workbench</title>
+_SEARCH_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Emerald · Boolean Workbench</title>
 <style>
  body{{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
  h1{{color:#2e7d52}} textarea{{width:100%;padding:.6rem;font:13px monospace}}
@@ -492,7 +607,7 @@ def _render_search(composed: str, kept: list, dropped: list, tested: bool) -> st
 # connector), so ingest is the per-job "Download Applicant Data (CSV)" export:
 # upload/paste it here, Boolean-screen it, optionally push survivors onto a Loxo job.
 
-_APPLICANTS_PAGE = """<!doctype html><meta charset=utf-8><title>Emerald · Handshake applicants</title>
+_APPLICANTS_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Emerald · Handshake applicants</title>
 <style>
  body{{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a2b22}}
  h1{{color:#2e7d52}} textarea{{width:100%;padding:.6rem;font:13px monospace}}

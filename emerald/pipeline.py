@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import os
 from datetime import datetime, timezone
@@ -15,24 +16,96 @@ from .handoff import build_sourcing_brief
 from .redact import redact
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
+# Durable, per-job store for the fetched candidate long list (+ their contacts).
+CANDIDATES_DIR = os.path.join(OUTPUT_DIR, "candidates")
+
+# The ordered JD body sections, as (heading, jd-key) pairs. Shared by both renderers
+# so the markdown preview and the HTML pushed to Loxo stay in lockstep.
+_JD_SECTIONS = (
+    ("Responsibilities", "responsibilities"),
+    ("Requirements", "requirements"),
+    ("Why Join", "why_join"),
+)
+
+
+def _comp_line(d: dict[str, Any]) -> str | None:
+    comp = d.get("comp") or {}
+    if not (comp.get("min") or comp.get("max")):
+        return None
+    cur = comp.get("currency", "USD")
+    per = comp.get("period", "year")
+    return f"{cur} {comp.get('min','?')}–{comp.get('max','?')} / {per}"
 
 
 def render_description(d: dict[str, Any]) -> str:
-    """Build a postable JD body (markdown) from the structured deliverables."""
+    """Build a plain-text/markdown JD body for the saved artifact + web preview.
+
+    Deliberately hashtag-free: headings are plain lines (no `#`), so nothing renders
+    as a stray "#" anywhere the JD is shown. The Loxo Description tab gets the HTML
+    version (render_description_html) instead.
+    """
     jd = d.get("jd", {})
-    lines = [f"## {d.get('title', 'Open Role')}", "", jd.get("summary", ""), ""]
-    if jd.get("responsibilities"):
-        lines += ["### Responsibilities", *[f"- {r}" for r in jd["responsibilities"]], ""]
-    if jd.get("requirements"):
-        lines += ["### Requirements", *[f"- {r}" for r in jd["requirements"]], ""]
-    if jd.get("why_join"):
-        lines += ["### Why Join", *[f"- {w}" for w in jd["why_join"]], ""]
-    comp = d.get("comp") or {}
-    if comp.get("min") or comp.get("max"):
-        cur = comp.get("currency", "USD")
-        per = comp.get("period", "year")
-        lines += [f"**Compensation:** {cur} {comp.get('min','?')}–{comp.get('max','?')} / {per}"]
+    lines = [d.get("title", "Open Role"), "", jd.get("summary", ""), ""]
+    for heading, key in _JD_SECTIONS:
+        if jd.get(key):
+            lines += [heading, *[f"- {item}" for item in jd[key]], ""]
+    comp = _comp_line(d)
+    if comp:
+        lines += [f"Compensation: {comp}"]
     return "\n".join(lines).strip()
+
+
+def render_description_html(d: dict[str, Any]) -> str:
+    """Build the JD body as clean HTML for Loxo's Description tab (rich-text field).
+
+    Loxo renders the description as HTML, so we emit real <h2>/<h3>/<ul> — headings
+    show as headings, not literal "#" hashtags. This is what gets pushed on job create.
+    """
+    def esc(x: Any) -> str:
+        return _html.escape(str(x if x is not None else ""))
+
+    jd = d.get("jd", {})
+    parts = [f"<h2>{esc(d.get('title', 'Open Role'))}</h2>"]
+    if jd.get("summary"):
+        parts.append(f"<p>{esc(jd['summary'])}</p>")
+    for heading, key in _JD_SECTIONS:
+        items = jd.get(key)
+        if items:
+            parts.append(f"<h3>{heading}</h3>")
+            parts.append("<ul>" + "".join(f"<li>{esc(i)}</li>" for i in items) + "</ul>")
+    comp = _comp_line(d)
+    if comp:
+        parts.append(f"<p><strong>Compensation:</strong> {esc(comp)}</p>")
+    return "\n".join(parts)
+
+
+def store_candidates(
+    key: str | int,
+    title: str | None,
+    candidates: list[dict[str, Any]],
+    enriched: bool = False,
+) -> str:
+    """Persist the fetched candidate list (+ contacts) to a durable, per-job file.
+
+    Keyed by the Loxo job id when there is one (else a title slug), so the sourced
+    long list and any gathered email/phone live in one predictable place:
+    output/candidates/<key>.json. Re-running the same job overwrites it.
+    """
+    os.makedirs(CANDIDATES_DIR, exist_ok=True)
+    safe = "".join(c for c in str(key) if c.isalnum() or c in "-_") or "job"
+    path = os.path.join(CANDIDATES_DIR, f"{safe}.json")
+    payload = {
+        "job_key": str(key),
+        "title": title,
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(candidates),
+        "enriched": enriched,
+        "with_contacts": sum(1 for c in candidates if c.get("email") or c.get("phone")),
+        "candidates": candidates,
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return path
 
 
 def _salary_str(comp: dict[str, Any] | None) -> str | None:
@@ -124,7 +197,8 @@ def run_pipeline(
     # 2) Anonymization safety-net
     deliverables, masked = redact(deliverables, client_name=client_name)
 
-    description_md = render_description(deliverables)
+    description_md = render_description(deliverables)     # hashtag-free preview/artifact
+    description_html = render_description_html(deliverables)  # for Loxo's Description tab
 
     result: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -134,6 +208,7 @@ def run_pipeline(
         "job_type": deliverables.get("_job_type", "general"),
         "deliverables": deliverables,
         "job_description_markdown": description_md,
+        "job_description_html": description_html,
         "loxo": None,
     }
 
@@ -145,7 +220,7 @@ def run_pipeline(
         client = LoxoClient()
         job = client.create_job(
             title=deliverables.get("title", "Confidential Search"),
-            description=description_md,
+            description=description_html,  # HTML -> renders cleanly in the Description tab
             salary=_salary_str(deliverables.get("comp")),
             published=publish,
         )
@@ -250,5 +325,13 @@ def run_pipeline(
                 for c in cands:
                     w.writerow({k: c.get(k, "") for k in w.fieldnames})
             result["candidates_path"] = cand_path
+            # Durable, per-job store keyed by Loxo job id (or title slug when no push):
+            # the fetched candidates + any gathered contacts, in one predictable place.
+            result["candidate_store_path"] = store_candidates(
+                job_id or slug,
+                deliverables.get("title"),
+                cands,
+                enriched=(result.get("sourcing") or {}).get("enriched", False),
+            )
 
     return result

@@ -27,6 +27,17 @@ class Settings:
     # When true, the transcript webhook creates the Loxo job automatically (else it
     # only generates + saves the artifact). Keep false until you trust the flow.
     webhook_push: bool = os.getenv("EMERALD_WEBHOOK_PUSH", "false").lower() == "true"
+    # When true, the webhook also SOURCES candidates (Seamless) and stores the fetched
+    # list under output/candidates/. Needs SEAMLESS_API_KEY (else it degrades to mock).
+    webhook_source: bool = os.getenv("EMERALD_WEBHOOK_SOURCE", "false").lower() == "true"
+    # When true, the webhook also GATHERS contacts (email/phone enrichment) for the
+    # sourced candidates and stores them alongside the candidate list. Spends Seamless
+    # credits — capped at EMERALD_ENRICH_TOP_N. Requires webhook_source.
+    webhook_enrich: bool = os.getenv("EMERALD_WEBHOOK_ENRICH", "false").lower() == "true"
+    # When true, jobs the webhook creates are PUBLISHED (live on the Loxo careers page
+    # + organic boards) instead of unpublished. OFF by default: publishing is public
+    # and hard to reverse — flip to true only when you deliberately want auto-publish.
+    webhook_publish: bool = os.getenv("EMERALD_WEBHOOK_PUBLISH", "false").lower() == "true"
 
     loxo_domain: str | None = os.getenv("LOXO_DOMAIN")
     loxo_slug: str | None = os.getenv("LOXO_SLUG")
