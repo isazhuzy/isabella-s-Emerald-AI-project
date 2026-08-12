@@ -33,6 +33,8 @@ from emerald.handshake import parse_applicants_csv, push_applicants
 from emerald.pipeline import (
     CANDIDATES_DIR,
     OUTPUT_DIR,
+    load_candidate_store,
+    push_contacts_to_loxo,
     push_sourced_candidates,
     run_pipeline,
 )
@@ -145,28 +147,89 @@ _CANDIDATES_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport con
  h1{{color:#2e7d52}} h2{{color:#2e7d52;font-size:1.05rem;margin-top:1.6rem}}
  table{{border-collapse:collapse;width:100%}} td,th{{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #e5ece8}}
  a{{color:#1b5e3a}} .muted{{color:#6b7d72}} .empty{{color:#6b7d72}}
+ button{{background:#2e7d52;color:#fff;border:0;padding:.35rem .7rem;border-radius:5px;font-size:13px;cursor:pointer}}
+ .note{{background:#eaf5ee;border:1px solid #bcdcc8;border-radius:6px;padding:.6rem .8rem;margin:1rem 0}}
 </style>
 <h1>Candidate files</h1>
 <p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp; Sourced candidate exports, newest first.</p>
+{msg}
 <h2>Per-run CSVs</h2>
 {csv_table}
-<h2>Per-job stores (JSON)</h2>
+<h2>Per-job stores (JSON) &mdash; sync contacts into Loxo</h2>
+<p class=muted>&ldquo;Sync &rarr; Loxo&rdquo; upserts every candidate that has an email/phone into Loxo
+(deduped by email); if the store is keyed to a Loxo job, they&rsquo;re also added to that job&rsquo;s pipeline.</p>
 {json_table}
 """
 
 
-@app.get("/candidates", response_class=HTMLResponse)
-def candidates_index(_: bool = Depends(require_login)) -> str:
+def _store_rows(paths: list[str]) -> str:
+    rows = []
+    for p in sorted(paths, key=os.path.getmtime, reverse=True):
+        name = os.path.basename(p)
+        when = datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M")
+        contacts = job = "?"
+        try:
+            data = json.loads(open(p).read())
+            contacts = data.get("with_contacts", "?")
+            job = data.get("job_key") or "—"
+        except Exception:
+            pass
+        sync = (
+            f'<form method=post action="/candidates/sync" style="margin:0">'
+            f'<input type=hidden name=name value="{_esc(name)}">'
+            f"<button {'disabled' if contacts == 0 else ''}>Sync &rarr; Loxo</button></form>"
+        )
+        rows.append(
+            f'<tr><td><a href="/download/candidates/{_esc(name)}">{_esc(name)}</a></td>'
+            f"<td class=muted>job {_esc(job)}</td>"
+            f"<td class=muted>{_esc(contacts)} w/ contact</td>"
+            f"<td class=muted>{when}</td><td>{sync}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _candidates_html(msg: str = "") -> str:
     csvs = glob.glob(os.path.join(OUTPUT_DIR, "*_candidates.csv"))
     jsons = glob.glob(os.path.join(CANDIDATES_DIR, "*.json"))
     csv_rows = _file_rows(csvs, "/download/csv")
-    json_rows = _file_rows(jsons, "/download/candidates")
+    json_rows = _store_rows(jsons)
     return _CANDIDATES_PAGE.format(
+        msg=f'<div class=note>{msg}</div>' if msg else "",
         csv_table=(f"<table>{csv_rows}</table>" if csv_rows
                    else "<p class=empty>No candidate CSVs yet — run a source to create one.</p>"),
         json_table=(f"<table>{json_rows}</table>" if json_rows
                     else "<p class=empty>No per-job stores yet.</p>"),
     )
+
+
+@app.get("/candidates", response_class=HTMLResponse)
+def candidates_index(_: bool = Depends(require_login)) -> str:
+    return _candidates_html()
+
+
+@app.post("/candidates/sync", response_class=HTMLResponse)
+def candidates_sync(
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),
+    _: bool = Depends(require_login),
+) -> str:
+    """Upsert the stored candidates' contacts into Loxo (in the background)."""
+    try:
+        data = load_candidate_store(name)  # basename'd inside — path-traversal safe
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return _candidates_html(f"⚠️ Couldn't read store “{_esc(name)}”.")
+    cands = data.get("candidates") or []
+    with_contact = [c for c in cands if c.get("email") or c.get("phone")]
+    if not with_contact:
+        return _candidates_html(
+            f"“{_esc(name)}” has no candidates with a contact yet — enrich first.")
+    job_key = data.get("job_key")
+    job_id = job_key if (job_key and str(job_key).isdigit()) else None
+    background_tasks.add_task(push_contacts_to_loxo, with_contact, job_id)
+    where = f" and attaching to Loxo job {_esc(job_id)}" if job_id else ""
+    return _candidates_html(
+        f"⏳ Syncing {len(with_contact)} contact(s) from “{_esc(name)}” into Loxo{where} "
+        "in the background — safe to leave this page.")
 
 
 @app.get("/download/csv/{name}")

@@ -20,6 +20,14 @@ class Settings:
     # Seamless.AI — candidate sourcing / contact enrichment (paid; API is Enterprise).
     seamless_api_key: str | None = os.getenv("SEAMLESS_API_KEY")
 
+    # SalesQL — secondary contact enrichment (email/phone from a LinkedIn URL). Used as
+    # a FALLBACK to fill contacts Seamless couldn't find. Needs a paid plan with API.
+    salesql_api_key: str | None = os.getenv("SALESQL_API_KEY")
+    # Which enrichment provider(s) to use: "seamless" (default), "salesql", or "both".
+    # "both"/"salesql" turn on the SalesQL fallback for candidates still missing a
+    # contact after Seamless (only fires when SALESQL_API_KEY is set).
+    enrich_provider: str = os.getenv("EMERALD_ENRICH_PROVIDER", "seamless").lower()
+
     # Fireflies.ai — live transcription. The webhook sends a meetingId; we fetch the
     # transcript via GraphQL. Secret verifies the x-hub-signature (HMAC-SHA256).
     fireflies_api_key: str | None = os.getenv("FIREFLIES_API_KEY")
@@ -87,6 +95,15 @@ class Settings:
     @property
     def has_seamless(self) -> bool:
         return bool(self.seamless_api_key)
+
+    @property
+    def has_salesql(self) -> bool:
+        return bool(self.salesql_api_key)
+
+    @property
+    def use_salesql_fallback(self) -> bool:
+        """True when SalesQL should backfill contacts Seamless missed."""
+        return self.enrich_provider in ("salesql", "both") and self.has_salesql
 
     @property
     def has_claude(self) -> bool:

@@ -115,18 +115,54 @@ def _salary_str(comp: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _resolve_person_id(client: Any, cand: dict[str, Any]) -> tuple[Any, bool]:
+    """Return (person_id, created) for a candidate, deduping by email.
+
+    If the candidate has an email that already maps to a Loxo person, reuse that
+    person (upsert — no duplicate). Otherwise create the person, sending along any
+    email/phone/linkedin so contacts land on the record. Loxo also auto-merges by
+    contact/LinkedIn, so a create still folds into an existing record.
+    """
+    existing = client.find_person_by_email(cand.get("email"))
+    if isinstance(existing, dict) and existing.get("id"):
+        return existing["id"], False
+    person = client.create_person(
+        name=cand.get("name") or "Unknown",
+        current_title=cand.get("title"),
+        current_company=cand.get("company"),
+        location=cand.get("location"),
+        linkedin_url=cand.get("linkedin"),
+        emails=[cand["email"]] if cand.get("email") else None,
+        phones=[cand["phone"]] if cand.get("phone") else None,
+    )
+    pobj = person.get("person", person) if isinstance(person, dict) else {}
+    pid = pobj.get("id") if isinstance(pobj, dict) else None
+    return pid, True
+
+
+def _pipeline_note(cand: dict[str, Any], source: str = "Seamless") -> str | None:
+    """The recruiter-facing note logged when a candidate lands on the job pipeline."""
+    ctx = " ".join(
+        x for x in (cand.get("title"),
+                    f"@ {cand['company']}" if cand.get("company") else "") if x
+    )
+    return f"Sourced via {source} — {ctx}".strip(" —") or None
+
+
 def push_sourced_candidates(
     job_id: str | int,
     candidates: list[dict[str, Any]],
     client: Any = None,
     pace: float = 0.6,
 ) -> dict[str, Any]:
-    """Create each sourced candidate as a Loxo person and add it to the job pipeline.
+    """Upsert each sourced candidate as a Loxo person and add it to the job pipeline.
 
-    Slow by design: Loxo rate-limits bursts, so we pace ~`pace`s between people — a
-    150-candidate push takes several minutes. Callers that must return quickly (the web
-    UI) run this in the background; the CLI calls it inline. Never raises: per-candidate
-    failures are collected and returned as {created, errors}.
+    Deduped by email (see _resolve_person_id) so re-pushing doesn't create duplicates,
+    and any gathered email/phone rides onto the person record. Slow by design: Loxo
+    rate-limits bursts, so we pace ~`pace`s between people — a 150-candidate push takes
+    several minutes. Callers that must return quickly (the web UI) run this in the
+    background; the CLI calls it inline. Never raises: per-candidate failures are
+    collected and returned as {created, errors}.
     """
     import time
 
@@ -140,31 +176,69 @@ def push_sourced_candidates(
         if i:
             time.sleep(pace)  # gentle pacing — Loxo rate-limits bursts
         try:
-            person = client.create_person(
-                name=cand.get("name") or "Unknown",
-                current_title=cand.get("title"),
-                current_company=cand.get("company"),
-                location=cand.get("location"),
-                linkedin_url=cand.get("linkedin"),
-                emails=[cand["email"]] if cand.get("email") else None,
-                phones=[cand["phone"]] if cand.get("phone") else None,
-            )
-            pobj = person.get("person", person) if isinstance(person, dict) else {}
-            pid = pobj.get("id") if isinstance(pobj, dict) else None
+            pid, _created = _resolve_person_id(client, cand)
             if pid:
-                # title/company can't live on the person; surface them (and the
-                # source) as the pipeline note for the recruiter.
-                ctx = " ".join(
-                    x for x in (cand.get("title"),
-                                f"@ {cand['company']}" if cand.get("company") else "")
-                    if x
-                )
-                note = f"Sourced via Seamless — {ctx}".strip(" —") or None
-                client.add_to_pipeline(job_id, pid, notes=note)
+                client.add_to_pipeline(job_id, pid, notes=_pipeline_note(cand))
                 pushed += 1
         except Exception as e:
             errors.append(f"{cand.get('name')}: {e}")
     return {"created": pushed, "errors": errors}
+
+
+def push_contacts_to_loxo(
+    candidates: list[dict[str, Any]],
+    job_id: str | int | None = None,
+    client: Any = None,
+    pace: float = 0.6,
+) -> dict[str, Any]:
+    """Sync candidates that HAVE contacts (email/phone) into Loxo person records.
+
+    This is the "put the fetched contacts into Loxo" step (upsert by email so an
+    existing person is updated in place rather than duplicated). Only candidates with
+    an email or phone are synced — the point is to land contact info. When a job_id is
+    given, each synced person is also added to that job's pipeline. Never raises;
+    returns {total, created, matched, attached, errors}.
+    """
+    import time
+
+    if client is None:
+        from .loxo import LoxoClient
+
+        client = LoxoClient()
+
+    with_contact = [c for c in candidates if c.get("email") or c.get("phone")]
+    created = matched = attached = 0
+    errors: list[str] = []
+    for i, cand in enumerate(with_contact):
+        if i:
+            time.sleep(pace)
+        try:
+            pid, was_created = _resolve_person_id(client, cand)
+            if not pid:
+                errors.append(f"{cand.get('name')}: no person id returned")
+                continue
+            created += int(was_created)
+            matched += int(not was_created)
+            if job_id:
+                client.add_to_pipeline(job_id, pid, notes=_pipeline_note(cand))
+                attached += 1
+        except Exception as e:
+            errors.append(f"{cand.get('name')}: {e}")
+    return {
+        "total": len(with_contact),
+        "created": created,
+        "matched": matched,
+        "attached": attached,
+        "errors": errors,
+    }
+
+
+def load_candidate_store(name: str) -> dict[str, Any]:
+    """Load a per-job candidate store file (output/candidates/<name>.json)."""
+    safe = os.path.basename(name)
+    path = os.path.join(CANDIDATES_DIR, safe)
+    with open(path) as f:
+        return json.load(f)
 
 
 def run_pipeline(
@@ -271,6 +345,22 @@ def run_pipeline(
                 )
             except Exception as e:  # don't let sourcing crash the pipeline
                 result["sourcing"] = {"error": str(e)}
+
+        # 4b-ii) SalesQL fallback: backfill contacts Seamless couldn't find (by LinkedIn
+        #        URL). Only when enrichment was requested and SalesQL is enabled + keyed.
+        if (
+            enrich_contacts
+            and settings.use_salesql_fallback
+            and (result.get("sourcing") or {}).get("candidates")
+        ):
+            from .salesql import fill_missing_contacts  # lazy import
+
+            try:
+                result["sourcing"]["salesql"] = fill_missing_contacts(
+                    result["sourcing"]["candidates"], limit=settings.enrich_top_n
+                )
+            except Exception as e:  # fallback must never crash the pipeline
+                result["sourcing"]["salesql"] = {"error": str(e)}
 
         # 4c) Boolean pre-screen: keep only candidates matching the filter and drop
         #     ("shoot") the rest BEFORE anything reaches Loxo. `auto` uses the

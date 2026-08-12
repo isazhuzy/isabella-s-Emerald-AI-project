@@ -68,6 +68,44 @@ class LoxoClient:
         params = {"query": query} if query else None
         return self._request("GET", "/companies", params=params)
 
+    def people(self, query: str | None = None) -> Any:
+        """GET /people — search contacts/candidates (Lucene query_string)."""
+        params = {"query": query} if query else None
+        return self._request("GET", "/people", params=params)
+
+    def find_person_by_email(self, email: str | None) -> dict[str, Any] | None:
+        """Return the existing Loxo person matching an email, or None (dedupe helper).
+
+        Read-only. Used to upsert contacts: if the person already exists we reuse their
+        id instead of creating a near-duplicate. Never raises — a lookup failure just
+        means "not found" and the caller creates the person (Loxo also auto-merges by
+        contact/LinkedIn, so a create still folds into the existing record).
+        """
+        if not email:
+            return None
+        try:
+            res = self.people(query=f'emails:"{email}"')
+        except LoxoError:
+            return None
+        rows = (
+            res.get("people") or res.get("results") or res.get("data")
+            or (res if isinstance(res, list) else [])
+        )
+        target = email.strip().lower()
+        for r in rows if isinstance(rows, list) else []:
+            p = r.get("person", r) if isinstance(r, dict) else {}
+            if not isinstance(p, dict):
+                continue
+            emails = {
+                (e.get("value") or "").strip().lower()
+                for e in (p.get("emails") or []) if isinstance(e, dict)
+            }
+            if target in emails:
+                return p
+        # No exact-email confirmation available; fall back to the first hit if any.
+        first = rows[0] if isinstance(rows, list) and rows else None
+        return first.get("person", first) if isinstance(first, dict) else None
+
     # ---- the Phase 1 write ----
     def create_job(
         self,
