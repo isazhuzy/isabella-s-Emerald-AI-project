@@ -787,6 +787,7 @@ async def applicants_run(
         kept, dropped = applicants, []
 
     push_result, push_error = None, ""
+    want_push = push
     if push and not INTEGRATIONS_ENABLED:
         push = False  # box stays checkable; the push itself never happens
     if push and kept:
@@ -803,7 +804,7 @@ async def applicants_run(
                else _render_applicants(kept, dropped, boolean, push_result, push_error))
     return _applicants_page(
         csv_text=_esc(csv_text), boolean=_esc(boolean), job_id=_esc(job_id),
-        push="checked" if push else "", push_verb=" &amp; push" if push else "",
+        push="checked" if want_push else "", push_verb=" &amp; push" if want_push else "",
         results=results,
     )
 
