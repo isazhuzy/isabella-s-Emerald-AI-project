@@ -38,6 +38,8 @@ services:
       - key: LOXO_NOTE_ACTIVITY_TYPE_ID
         sync: false
       # --- non-secret config ---
+      - key: EMERALD_INTEGRATIONS_ENABLED
+        value: "false"            # Loxo + candidate sourcing OFF on the site; "true" to re-enable
       - key: LOXO_DEFAULT_OWNER_EMAILS
         value: mark@emeraldresourcegroup.com   # job "belongs to" owner; comma-sep for co-owners
       - key: EMERALD_MODEL

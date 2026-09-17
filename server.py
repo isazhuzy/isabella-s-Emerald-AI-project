@@ -58,6 +58,25 @@ def require_login(creds: HTTPBasicCredentials = Depends(_security)) -> bool:
     return True
 
 
+# Loxo + candidate-sourcing kill switch (EMERALD_INTEGRATIONS_ENABLED, default off).
+# While off, the site still generates deliverables, but no request can create a Loxo
+# job, source candidates, sync contacts or push applicants — the controls render
+# disabled and the server ignores the flags even if someone posts them by hand.
+INTEGRATIONS_ENABLED = settings.integrations_enabled
+_INTEGRATIONS_OFF_NOTE = (
+    '<p class=muted><b>Loxo &amp; candidate sourcing are temporarily disabled</b> on this site '
+    '&mdash; only the JD / Booleans / brief are generated. (Re-enable with '
+    '<code>EMERALD_INTEGRATIONS_ENABLED=true</code>.)</p>')
+
+
+def _integrations_note() -> str:
+    return "" if INTEGRATIONS_ENABLED else _INTEGRATIONS_OFF_NOTE
+
+
+def _disabled_attr() -> str:
+    return "" if INTEGRATIONS_ENABLED else "disabled"
+
+
 # ----------------------------- webhook (hands-off path) -----------------------------
 def _verify_fireflies_signature(raw_body: bytes, header: str | None) -> bool:
     """Verify the x-hub-signature (HMAC-SHA256) if a secret is configured."""
@@ -103,6 +122,7 @@ def health() -> dict[str, str]:
         "status": "ok",
         "commit": (os.getenv("RENDER_GIT_COMMIT") or "local")[:7],
         "owner_default": ",".join(settings.loxo_default_owner_emails) or "(unset)",
+        "integrations": "enabled" if INTEGRATIONS_ENABLED else "disabled",
     }
 
 
@@ -177,7 +197,8 @@ def _store_rows(paths: list[str]) -> str:
         sync = (
             f'<form method=post action="/candidates/sync" style="margin:0">'
             f'<input type=hidden name=name value="{_esc(name)}">'
-            f"<button {'disabled' if contacts == 0 else ''}>Sync &rarr; Loxo</button></form>"
+            f"<button {'disabled' if (contacts == 0 or not INTEGRATIONS_ENABLED) else ''}>"
+            f"Sync &rarr; Loxo</button></form>"
         )
         rows.append(
             f'<tr><td><a href="/download/candidates/{_esc(name)}">{_esc(name)}</a></td>'
@@ -214,6 +235,8 @@ def candidates_sync(
     _: bool = Depends(require_login),
 ) -> str:
     """Upsert the stored candidates' contacts into Loxo (in the background)."""
+    if not INTEGRATIONS_ENABLED:
+        return _candidates_html("⛔ Loxo sync is disabled on this site right now.")
     try:
         data = load_candidate_store(name)  # basename'd inside — path-traversal safe
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -270,13 +293,15 @@ async def on_transcript(
     #   EMERALD_WEBHOOK_PUBLISH -> publish it live (careers page); default OFF
     #   EMERALD_WEBHOOK_SOURCE  -> source candidates and store them (output/candidates/)
     #   EMERALD_WEBHOOK_ENRICH  -> also gather their contacts (email/phone) and store
+    # ...and all of them are forced off while EMERALD_INTEGRATIONS_ENABLED is false.
+    on = INTEGRATIONS_ENABLED
     result = run_pipeline(
         transcript,
         client_name=client,
-        push_to_loxo=settings.webhook_push,
-        publish=settings.webhook_publish,
-        source=settings.webhook_source,
-        enrich_contacts=settings.webhook_enrich,
+        push_to_loxo=on and settings.webhook_push,
+        publish=on and settings.webhook_publish,
+        source=on and settings.webhook_source,
+        enrich_contacts=on and settings.webhook_enrich,
     )
 
     # If we both created a job AND sourced candidates, attach them to the job pipeline
@@ -298,6 +323,7 @@ async def on_transcript(
         "contacts_gathered": sum(1 for c in cands if c.get("email") or c.get("phone")),
         "candidate_store": result.get("candidate_store_path"),
         "queued_to_loxo": bool(job_id and cands),
+        "integrations": "enabled" if INTEGRATIONS_ENABLED else "disabled",
     }
 
 
@@ -319,14 +345,15 @@ _PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width
 &nbsp;·&nbsp; <a href="/search">🔎 Boolean Workbench &rarr;</a>
 &nbsp;·&nbsp; <a href="/applicants">📥 Handshake applicants &rarr;</a>
 &nbsp;·&nbsp; <a href="/candidates">📄 Candidate CSVs &rarr;</a></p>
+{integrations_note}
 <form method=post action=/run>
  <label>Client name (anonymized out)</label>
  <input type=text name=client placeholder="e.g. Merrymeeting Group">
  <label>Intake transcript</label>
  <textarea name=transcript placeholder="Paste the call transcript here...">{transcript}</textarea>
  <div class=row>
-  <label><input type=checkbox name=push value=1 {push}> Create Loxo job</label>
-  <label><input type=checkbox name=source value=1 {source}> Source + attach candidates (Seamless)</label>
+  <label><input type=checkbox name=push value=1 {push} {disabled}> Create Loxo job</label>
+  <label><input type=checkbox name=source value=1 {source} {disabled}> Source + attach candidates (Seamless)</label>
  </div>
  <button>Run</button>
 </form>
@@ -381,9 +408,13 @@ def _render_results(result: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _page(**kw: str) -> str:
+    return _PAGE.format(integrations_note=_integrations_note(), disabled=_disabled_attr(), **kw)
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(_: bool = Depends(require_login)) -> str:
-    return _PAGE.format(transcript="", push="", source="", results="")
+    return _page(transcript="", push="", source="", results="")
 
 
 @app.post("/run", response_class=HTMLResponse)
@@ -396,8 +427,11 @@ def run(
     _: bool = Depends(require_login),
 ) -> str:
     if not transcript.strip():
-        return _PAGE.format(transcript="", push="", source="",
-                            results="<p class=muted>Please paste a transcript.</p>")
+        return _page(transcript="", push="", source="",
+                     results="<p class=muted>Please paste a transcript.</p>")
+    # Ignore the Loxo / sourcing flags entirely while integrations are switched off.
+    if not INTEGRATIONS_ENABLED:
+        push = source = False
     # Everything except the candidate push is fast (generation, Loxo job, sourcing
     # search, brief). Pushing 75–150 people into Loxo one-by-one takes minutes and would
     # time out the browser, so we defer that to a background task and return immediately.
@@ -418,7 +452,7 @@ def run(
             result["sourcing"]["push_error"] = (
                 "no Loxo job was created, so candidates weren't attached."
             )
-    return _PAGE.format(
+    return _page(
         transcript=_esc(transcript),
         push="checked" if push else "",
         source="checked" if source else "",
@@ -686,6 +720,7 @@ _APPLICANTS_PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport con
 <p class=muted><a href="/">&larr; Back to Emerald</a> &nbsp;·&nbsp;
 In Handshake open the job &rarr; Applicants &rarr; <b>Download Applicant Data (CSV)</b>, then upload it here.
 Screen with a Boolean (build one in the <a href="/search">Workbench</a>) and push the keepers onto the Loxo job.</p>
+{integrations_note}
 <form method=post action=/applicants enctype=multipart/form-data>
  <label>Applicant CSV <span class=hint>(upload the Handshake export, or paste its contents below)</span></label>
  <input type=file name=csv_file accept=".csv,text/csv">
@@ -699,7 +734,7 @@ Screen with a Boolean (build one in the <a href="/search">Workbench</a>) and pus
   </div>
   <div>
    <div class=row style="margin-top:2.1rem">
-    <label><input type=checkbox name=push value=1 {push}> Push kept applicants to Loxo</label>
+    <label><input type=checkbox name=push value=1 {push} {disabled}> Push kept applicants to Loxo</label>
    </div>
   </div>
  </div>
@@ -736,10 +771,15 @@ def _render_applicants(kept: list, dropped: list, boolean: str,
     return "".join(parts)
 
 
+def _applicants_page(**kw: str) -> str:
+    return _APPLICANTS_PAGE.format(integrations_note=_integrations_note(),
+                                   disabled=_disabled_attr(), **kw)
+
+
 @app.get("/applicants", response_class=HTMLResponse)
 def applicants_form(_: bool = Depends(require_login)) -> str:
-    return _APPLICANTS_PAGE.format(csv_text="", boolean="", job_id="", push="",
-                                   push_verb="", results="")
+    return _applicants_page(csv_text="", boolean="", job_id="", push="",
+                            push_verb="", results="")
 
 
 @app.post("/applicants", response_class=HTMLResponse)
@@ -761,6 +801,9 @@ async def applicants_run(
         kept, dropped = applicants, []
 
     push_result, push_error = None, ""
+    if push and not INTEGRATIONS_ENABLED:
+        push = False
+        push_error = "Push skipped: Loxo integration is disabled on this site right now."
     if push and kept:
         if not job_id.strip():
             push_error = "Push skipped: enter the Loxo job # to attach the keepers to."
@@ -773,7 +816,7 @@ async def applicants_run(
     results = ("<p class=muted>No applicants found — upload the Handshake CSV "
                "(or paste it) and try again.</p>" if not applicants
                else _render_applicants(kept, dropped, boolean, push_result, push_error))
-    return _APPLICANTS_PAGE.format(
+    return _applicants_page(
         csv_text=_esc(csv_text), boolean=_esc(boolean), job_id=_esc(job_id),
         push="checked" if push else "", push_verb=" &amp; push" if push else "",
         results=results,

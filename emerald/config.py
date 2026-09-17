@@ -32,6 +32,13 @@ class Settings:
     # transcript via GraphQL. Secret verifies the x-hub-signature (HMAC-SHA256).
     fireflies_api_key: str | None = os.getenv("FIREFLIES_API_KEY")
     fireflies_webhook_secret: str | None = os.getenv("FIREFLIES_WEBHOOK_SECRET")
+    # Master switch for the hosted web app's Loxo + candidate-sourcing features (create
+    # job, source/attach candidates, sync contacts, push applicants, webhook auto-push).
+    # OFF by default: the Render site then only generates deliverables (JD, Booleans,
+    # brief) and every Loxo / sourcing control is disabled. Set to "true" to re-enable.
+    # The CLI (run.py) is not affected by this flag.
+    integrations_enabled: bool = (
+        os.getenv("EMERALD_INTEGRATIONS_ENABLED", "false").lower() == "true")
     # When true, the transcript webhook creates the Loxo job automatically (else it
     # only generates + saves the artifact). Keep false until you trust the flow.
     webhook_push: bool = os.getenv("EMERALD_WEBHOOK_PUSH", "false").lower() == "true"
